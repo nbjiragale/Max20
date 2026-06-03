@@ -2,4 +2,29 @@
 <resources>
 
     <style name="Theme.Max20" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <!--
+      Theme.Max20.Lockdown: applied to LockdownActivity.
+
+      windowIsTranslucent=false — opaque black background; nothing bleeds through.
+      windowBackground=@android:color/black — eliminates white flash on activity start.
+      statusBarColor + navigationBarColor = black — visual continuity with the overlay.
+      windowNoTitle + windowActionBar=false — no chrome whatsoever.
+      windowFullscreen=true — requests fullscreen; insetsController hides bars in code.
+
+      This theme is NOT responsible for hiding the status bar permanently — that is
+      done programmatically via WindowInsetsController in LockdownActivity.onCreate()
+      so it can be toggled off during active phone calls.
+    -->
+    <style name="Theme.Max20.Lockdown" parent="android:Theme.Material.NoTitleBar.Fullscreen">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:windowIsTranslucent">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:statusBarColor">@android:color/black</item>
+        <item name="android:navigationBarColor">@android:color/black</item>
+    </style>
+
 </resources>

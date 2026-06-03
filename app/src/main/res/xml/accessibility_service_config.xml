@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  AccessibilityService configuration for LockdownAccessibilityService.
+
+  accessibilityEventTypes: typeWindowStateChanged is the critical event.
+    The WindowManagerService fires this the instant any window gains focus,
+    allowing the service to intercept before the app's UI is rendered.
+    typeWindowContentChanged catches sub-window content changes (e.g., the
+    Settings app navigating to the App Info page for Max20).
+
+  accessibilityFeedbackType: feedbackGeneric is the correct type for
+    digital wellbeing applications that do not provide auditory/haptic
+    feedback to the user. This is explicitly accepted under Google Play's
+    narrow digital wellbeing exception to the Accessibility policy.
+
+  canRetrieveWindowContent: true — required to read getPackageName() from
+    AccessibilityEvent and AccessibilityNodeInfo trees.
+
+  android:description: must match the Play Console disclosure verbatim.
+
+  notificationTimeout: 100ms prevents event flooding on rapid window switches.
+-->
+<accessibility-service
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault|flagReportViewIds"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/accessibility_service_description"
+    android:notificationTimeout="100"
+    android:settingsActivity=".MainActivity" />

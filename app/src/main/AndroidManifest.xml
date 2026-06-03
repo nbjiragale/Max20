@@ -2,15 +2,88 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- ══════════════════════════════════════════════════════════════════
+         PROCESS LIFECYCLE PERMISSIONS
+         Required for foreground service survival against Vivo i-Manager
+         ═══════════════════════════════════════════════════════════════ -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- API 34: specialUse type required — declared on each service element -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Holds CPU awake during active lockdown timers -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Required for Android 13+ notification display -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Fires LOCKED_BOOT_COMPLETED for Direct Boot resurrection -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Allows requesting battery optimization exemption dialog -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Allows tasks to be reordered to front in onUserLeaveHint -->
+    <uses-permission android:name="android.permission.REORDER_TASKS" />
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         UI OVERLAY PERMISSIONS
+         KioskOverlayService fallback shield when Lock Task Mode fails
+         ═══════════════════════════════════════════════════════════════ -->
+    <!-- Full-screen TYPE_APPLICATION_OVERLAY window over all other apps -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Required for full-screen lockdown notification on API 29+ -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         TELEPHONY PERMISSIONS
+         Strategy B InCallService: handle calls inside lockdown sandbox
+         ═══════════════════════════════════════════════════════════════ -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <!-- Allows managing calls without being the default dialer initially -->
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         USAGE STATS PERMISSIONS
+         Supplemental detection layer — secondary to AccessibilityService
+         ═══════════════════════════════════════════════════════════════ -->
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         DEVICE ADMIN PERMISSION
+         Blocks uninstallation during active lockdown periods
+         ═══════════════════════════════════════════════════════════════ -->
+    <uses-permission android:name="android.permission.BIND_DEVICE_ADMIN" />
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         HARDWARE / SOFTWARE FEATURE DECLARATIONS
+         ═══════════════════════════════════════════════════════════════ -->
+    <!-- App is fundamentally a phone app — telephony is non-optional -->
+    <uses-feature
+        android:name="android.hardware.telephony"
+        android:required="true" />
+    <!-- Device lockscreen is utilized but not strictly required (some tablets) -->
+    <uses-feature
+        android:name="android.software.lockscreen"
+        android:required="false" />
+
+    <!-- ══════════════════════════════════════════════════════════════════
+         APPLICATION
+         android:directBootAware="true" on the <application> element means
+         ALL declared components can execute from Device Encrypted (DE)
+         storage before the user enters their PIN/password. This closes the
+         reboot-evasion vector described in the research report §4.
+         ═══════════════════════════════════════════════════════════════ -->
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Max20">
+        android:theme="@style/Theme.Max20"
+        android:directBootAware="true">
+
+        <!-- ── Onboarding / setup entry point ─────────────────────────── -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -18,10 +91,160 @@
             android:theme="@style/Theme.Max20">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- ── LockdownActivity ────────────────────────────────────────
+             Dual role: lockdown UI + HOME launcher replacement.
+             The HOME/DEFAULT intent-filter allows RoleManager.ROLE_HOME
+             to route all home-button presses back to this app, eliminating
+             the home-button escape vector during the 20-minute lockdown.
+
+             android:launchMode="singleInstance" — only one task/instance
+             android:taskAffinity="" — isolated task stack, not groupable
+             android:showWhenLocked + turnScreenOn — renders before keyguard
+             android:excludeFromRecents — invisible in the recents list
+             ─────────────────────────────────────────────────────────── -->
+        <activity
+            android:name=".ui.LockdownActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:launchMode="singleInstance"
+            android:showOnLockScreen="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.Max20.Lockdown">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- ── TimeEnforcerService ─────────────────────────────────────
+             Heart of the 20/20 cycle. foregroundServiceType="specialUse"
+             requires the android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE
+             property declaration (mandatory for Google Play submission).
+             android:stopWithTask="false" — survives app removal from recents.
+             ─────────────────────────────────────────────────────────── -->
+        <service
+            android:name=".service.TimeEnforcerService"
+            android:exported="false"
+            android:directBootAware="true"
+            android:foregroundServiceType="specialUse"
+            android:stopWithTask="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="20_20_digital_wellbeing_timer_enforcement" />
+        </service>
+
+        <!-- ── KioskOverlayService ─────────────────────────────────────
+             Fallback visual shield. Draws TYPE_APPLICATION_OVERLAY window
+             when Lock Task Mode has been compromised or is unavailable
+             (no Device Owner). Runs as a separate foreground service so
+             it can be independently stopped during active phone calls.
+             ─────────────────────────────────────────────────────────── -->
+        <service
+            android:name=".service.KioskOverlayService"
+            android:exported="false"
+            android:directBootAware="true"
+            android:foregroundServiceType="specialUse"
+            android:stopWithTask="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="20_20_digital_wellbeing_screen_overlay" />
+        </service>
+
+        <!-- ── LockdownAccessibilityService ───────────────────────────
+             Event-driven enforcement engine. Receives TYPE_WINDOW_STATE_
+             CHANGED events the instant any window takes focus — no polling
+             latency. Anti-tampers by returning HOME when Settings or any
+             non-whitelisted package gains focus during lockdown.
+             canRetrieveWindowContent="true" allows reading package names.
+             ─────────────────────────────────────────────────────────── -->
+        <service
+            android:name=".service.LockdownAccessibilityService"
+            android:exported="true"
+            android:directBootAware="true"
+            android:label="@string/accessibility_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!-- ── Max20InCallService ──────────────────────────────────────
+             Strategy B telephony integration: our app IS the dialer.
+             Extending InCallService and requesting ROLE_DIALER means
+             Android routes all call state directly to this class, entirely
+             avoiding Lock Task Mode UserCallActivity violations.
+             android.telecom.IN_CALL_SERVICE_UI=true → we provide call UI.
+             ─────────────────────────────────────────────────────────── -->
+        <service
+            android:name=".service.Max20InCallService"
+            android:exported="true"
+            android:directBootAware="true"
+            android:permission="android.permission.BIND_INCALL_SERVICE">
+            <meta-data
+                android:name="android.telecom.IN_CALL_SERVICE_UI"
+                android:value="true" />
+            <meta-data
+                android:name="android.telecom.IN_CALL_SERVICE_CAR_MODE_UI"
+                android:value="false" />
+            <intent-filter>
+                <action android:name="android.telecom.InCallService" />
+            </intent-filter>
+        </service>
+
+        <!-- ── Max20DeviceAdminReceiver ────────────────────────────────
+             Grants Device Admin status so the OS blocks uninstallation
+             until the user explicitly deactivates admin rights (at which
+             point the AccessibilityService intercepts the attempt).
+             ─────────────────────────────────────────────────────────── -->
+        <receiver
+            android:name=".receiver.Max20DeviceAdminReceiver"
+            android:exported="true"
+            android:directBootAware="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- ── BootReceiver ────────────────────────────────────────────
+             android:priority="1000" — processes this intent before other
+             receivers to grab screen control as early as possible.
+
+             ACTION_LOCKED_BOOT_COMPLETED fires the moment DE storage is
+             available — BEFORE the user enters their PIN. This is the
+             key to defeating the reboot evasion vector.
+
+             ACTION_BOOT_COMPLETED fires after credential unlock for any
+             CE-storage initialization that couldn't happen during Direct Boot.
+
+             ACTION_QUICKBOOT_POWERON handles Vivo's fast-boot resume event
+             which some FunTouch OS builds fire instead of BOOT_COMPLETED.
+             ─────────────────────────────────────────────────────────── -->
+        <receiver
+            android:name=".receiver.BootReceiver"
+            android:exported="true"
+            android:directBootAware="true">
+            <intent-filter android:priority="1000">
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+
     </application>
 
 </manifest>

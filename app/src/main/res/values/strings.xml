@@ -1,3 +1,15 @@
 <resources>
     <string name="app_name">Max20</string>
+    <string name="accessibility_service_label">20/20 Rule Enforcer</string>
+    <!--
+      This description is submitted verbatim to Google Play Console during the
+      app review process. Modifying it risks automated rejection.
+    -->
+    <string name="accessibility_service_description">This application utilizes Accessibility Services to detect when you attempt to exit the 20-minute lockdown window or uninstall the application. It uses this permission to automatically navigate you back to the lockdown screen to enforce your digital wellbeing goals. No personal data is collected, monitored, or transmitted.</string>
+    <string name="lockdown_title">Screen Time Paused</string>
+    <string name="lockdown_subtitle">Rest period in progress. Phone calls are still available.</string>
+    <string name="lockdown_timer_label">Lockdown ends in</string>
+    <string name="work_timer_label">Screen time remaining</string>
+    <string name="emergency_call_label">Make a Call</string>
+    <string name="device_admin_description">Max20 requires Device Administrator access to prevent uninstallation during active lockdown periods. This protects your digital wellbeing commitment.</string>
 </resources>

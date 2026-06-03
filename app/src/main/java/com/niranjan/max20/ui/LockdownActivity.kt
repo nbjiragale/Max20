@@ -1,0 +1,455 @@
+package com.niranjan.max20.ui
+
+import android.app.ActivityManager
+import android.app.role.RoleManager
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.Build
+import android.os.Bundle
+import android.telecom.TelecomManager
+import android.util.Log
+import android.view.WindowInsetsController
+import android.view.WindowManager
+import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.lifecycleScope
+import com.niranjan.max20.AppConstants
+import com.niranjan.max20.AppStateManager
+import com.niranjan.max20.data.TimerPhase
+import com.niranjan.max20.data.TimerState
+import com.niranjan.max20.data.TimerStateStore
+import com.niranjan.max20.service.TimeEnforcerService
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.launch
+
+/**
+ * LockdownActivity — dual-role: inescapable lockdown UI + HOME launcher replacement.
+ *
+ * Lock Task Mode:
+ *   startLockTask() is called in onResume() every time the activity returns to
+ *   the foreground. If Lock Task Mode is active, the Recents button and its
+ *   swipe gesture are suppressed by the OS. We handle SecurityException
+ *   gracefully and rely on the overlay + accessibility service as fallback.
+ *
+ * Home button capture:
+ *   The activity declares HOME/DEFAULT intent filters (see manifest) allowing
+ *   RoleManager.ROLE_HOME to route home-button presses here. We request this
+ *   role on first launch. Until the role is granted, the KioskOverlayService
+ *   provides visual coverage.
+ *
+ * Back press neutralization:
+ *   OnBackPressedDispatcher with a consuming callback — during lockdown, back
+ *   presses are silently consumed. The callback is only enabled in LOCKDOWN phase.
+ *
+ * onUserLeaveHint():
+ *   Fires when the user presses Home, Recents, or switches apps. We immediately
+ *   reorder the task to front with FLAG_ACTIVITY_REORDER_TO_FRONT, snapping
+ *   back before the other app's first frame renders.
+ *
+ * Direct Boot:
+ *   The activity is declared directBootAware. If launched before credential
+ *   unlock (by BootReceiver), the Room DB read is from DE storage — the
+ *   activity shows the countdown immediately.
+ */
+class LockdownActivity : ComponentActivity() {
+
+    private companion object {
+        const val REQUEST_ROLE_HOME   = 1001
+        const val REQUEST_ROLE_DIALER = 1002
+    }
+
+    private lateinit var store: TimerStateStore
+    private val lockdownStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                AppConstants.ACTION_START_LOCKDOWN -> {
+                    Log.i(AppConstants.TAG_ENFORCER,
+                        "LockdownActivity: received START_LOCKDOWN broadcast")
+                    applyLockdownWindowFlags()
+                    startLockTaskSafely()
+                }
+                AppConstants.ACTION_END_LOCKDOWN -> {
+                    Log.i(AppConstants.TAG_ENFORCER,
+                        "LockdownActivity: received END_LOCKDOWN — releasing window flags")
+                    releaseWindowFlags()
+                    stopLockTaskSafely()
+                }
+            }
+        }
+    }
+
+    // ── Lifecycle ──────────────────────────────────────────────────────────
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        store = TimerStateStore.getInstance(this)
+
+        configureWindowForLockdown()
+        registerPhaseReceiver()
+        installBackPressHandler()
+
+        setContent {
+            LockdownScreen(store = store)
+        }
+
+        ensureEnforcerServiceRunning()
+        requestSystemRoles()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        Log.d(AppConstants.TAG_ENFORCER, "LockdownActivity.onResume")
+
+        if (AppStateManager.isLockdownActive) {
+            applyLockdownWindowFlags()
+            startLockTaskSafely()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        Log.d(AppConstants.TAG_ENFORCER, "LockdownActivity.onPause")
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (AppStateManager.isLockdownActive && !AppStateManager.isCallActive) {
+            Log.i(AppConstants.TAG_ENFORCER,
+                "onUserLeaveHint during LOCKDOWN — reordering task to front immediately")
+            val reorderIntent = Intent(this, LockdownActivity::class.java).apply {
+                addFlags(
+                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+                )
+            }
+            startActivity(reorderIntent)
+        }
+    }
+
+    override fun onDestroy() {
+        Log.d(AppConstants.TAG_ENFORCER, "LockdownActivity.onDestroy")
+        runCatching { unregisterReceiver(lockdownStateReceiver) }.onFailure { ex ->
+            Log.w(AppConstants.TAG_ENFORCER,
+                "Receiver already unregistered: ${ex.message}")
+        }
+        super.onDestroy()
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        when (requestCode) {
+            REQUEST_ROLE_HOME -> {
+                val granted = resultCode == RESULT_OK
+                Log.i(AppConstants.TAG_ENFORCER,
+                    "ROLE_HOME request result: granted=$granted")
+                if (!granted) {
+                    Log.w(AppConstants.TAG_ENFORCER,
+                        "ROLE_HOME not granted — home button will not be captured. " +
+                        "KioskOverlayService acts as coverage.")
+                }
+            }
+            REQUEST_ROLE_DIALER -> {
+                val granted = resultCode == RESULT_OK
+                Log.i(AppConstants.TAG_CALL,
+                    "ROLE_DIALER request result: granted=$granted")
+                if (!granted) {
+                    Log.w(AppConstants.TAG_CALL,
+                        "ROLE_DIALER not granted — call handling falls back to system dialer + " +
+                        "DPM package whitelist. Lock Task violations may occur on Vivo devices.")
+                }
+            }
+        }
+    }
+
+    // ── Window Configuration ───────────────────────────────────────────────
+
+    private fun configureWindowForLockdown() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+            )
+        }
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    private fun applyLockdownWindowFlags() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.insetsController?.let { controller ->
+                controller.hide(
+                    android.view.WindowInsets.Type.statusBars() or
+                    android.view.WindowInsets.Type.navigationBars()
+                )
+                controller.systemBarsBehavior =
+                    WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = (
+                android.view.View.SYSTEM_UI_FLAG_FULLSCREEN or
+                android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+            )
+        }
+        Log.d(AppConstants.TAG_ENFORCER, "Lockdown window flags applied — system bars hidden")
+    }
+
+    private fun releaseWindowFlags() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.insetsController?.show(
+                android.view.WindowInsets.Type.statusBars() or
+                android.view.WindowInsets.Type.navigationBars()
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_VISIBLE
+        }
+        Log.d(AppConstants.TAG_ENFORCER, "Window flags released — system bars restored")
+    }
+
+    // ── Lock Task Mode ─────────────────────────────────────────────────────
+
+    private fun startLockTaskSafely() {
+        runCatching {
+            startLockTask()
+            Log.i(AppConstants.TAG_ENFORCER, "Lock Task Mode STARTED — Recents and Overview suppressed")
+        }.onFailure { ex ->
+            Log.w(AppConstants.TAG_ENFORCER,
+                "startLockTask() failed (${ex.javaClass.simpleName}: ${ex.message}) — " +
+                "no Device Owner provisioned. Relying on overlay + accessibility enforcement.")
+        }
+    }
+
+    private fun stopLockTaskSafely() {
+        val am = getSystemService(ACTIVITY_SERVICE) as ActivityManager
+        val isInLockTask = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            am.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
+        } else {
+            @Suppress("DEPRECATION")
+            am.isInLockTaskMode
+        }
+
+        if (isInLockTask) {
+            runCatching {
+                stopLockTask()
+                Log.i(AppConstants.TAG_ENFORCER, "Lock Task Mode stopped")
+            }.onFailure { ex ->
+                Log.w(AppConstants.TAG_ENFORCER,
+                    "stopLockTask() failed: ${ex.message}")
+            }
+        }
+    }
+
+    // ── Back Press ────────────────────────────────────────────────────────
+
+    private fun installBackPressHandler() {
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (AppStateManager.isLockdownActive) {
+                    Log.d(AppConstants.TAG_ENFORCER,
+                        "Back press consumed during LOCKDOWN — not finishing activity")
+                    // Intentionally consumed. Do not call isEnabled = false or finish().
+                } else {
+                    Log.d(AppConstants.TAG_ENFORCER,
+                        "Back press during WORK phase — passing through")
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                    isEnabled = true
+                }
+            }
+        })
+    }
+
+    // ── Role Requests ──────────────────────────────────────────────────────
+
+    private fun requestSystemRoles() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val roleManager = getSystemService(RoleManager::class.java) ?: run {
+                Log.e(AppConstants.TAG_ENFORCER, "RoleManager is null — cannot request HOME role")
+                return
+            }
+
+            if (!roleManager.isRoleHeld(RoleManager.ROLE_HOME)) {
+                Log.i(AppConstants.TAG_ENFORCER,
+                    "Requesting ROLE_HOME — this routes all home-button presses to LockdownActivity")
+                val intent = roleManager.createRequestRoleIntent(RoleManager.ROLE_HOME)
+                @Suppress("DEPRECATION")
+                startActivityForResult(intent, REQUEST_ROLE_HOME)
+            } else {
+                Log.i(AppConstants.TAG_ENFORCER, "ROLE_HOME already held")
+            }
+
+            if (!roleManager.isRoleHeld(RoleManager.ROLE_DIALER)) {
+                Log.i(AppConstants.TAG_CALL,
+                    "Requesting ROLE_DIALER — routes all call states to Max20InCallService")
+                val intent = roleManager.createRequestRoleIntent(RoleManager.ROLE_DIALER)
+                @Suppress("DEPRECATION")
+                startActivityForResult(intent, REQUEST_ROLE_DIALER)
+            } else {
+                Log.i(AppConstants.TAG_CALL, "ROLE_DIALER already held")
+            }
+        }
+    }
+
+    // ── Service Initialization ─────────────────────────────────────────────
+
+    private fun ensureEnforcerServiceRunning() {
+        if (!AppStateManager.isServiceAlive) {
+            Log.i(AppConstants.TAG_ENFORCER,
+                "TimeEnforcerService not alive — starting from LockdownActivity.onCreate")
+            val intent = Intent(this, TimeEnforcerService::class.java)
+            startForegroundService(intent)
+        }
+    }
+
+    // ── Receiver Registration ──────────────────────────────────────────────
+
+    private fun registerPhaseReceiver() {
+        val filter = IntentFilter().apply {
+            addAction(AppConstants.ACTION_START_LOCKDOWN)
+            addAction(AppConstants.ACTION_END_LOCKDOWN)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(lockdownStateReceiver, filter, RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(lockdownStateReceiver, filter)
+        }
+    }
+}
+
+// ── Compose UI ─────────────────────────────────────────────────────────────
+
+@Composable
+private fun LockdownScreen(store: TimerStateStore) {
+    val timerState by store.observeState()
+        .filterNotNull()
+        .collectAsState(initial = null)
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+            modifier = Modifier.padding(32.dp)
+        ) {
+            val state = timerState
+            if (state != null && state.phase == TimerPhase.LOCKDOWN && state.isActive) {
+                LockdownCountdown(state)
+            } else if (state != null && state.phase == TimerPhase.WORK && state.isActive) {
+                WorkPhaseDisplay(state)
+            } else {
+                InitializingDisplay()
+            }
+        }
+    }
+}
+
+@Composable
+private fun LockdownCountdown(state: TimerState) {
+    var remainingMs by remember { mutableLongStateOf(state.remainingMs) }
+
+    LaunchedEffect(state.phaseStartEpochMs) {
+        while (remainingMs > 0L) {
+            delay(1_000L)
+            remainingMs = state.remainingMs
+        }
+    }
+
+    val mins = remainingMs / 60_000L
+    val secs = (remainingMs % 60_000L) / 1_000L
+
+    Text(
+        text = "Screen Time Paused",
+        color = Color.White,
+        fontSize = 24.sp,
+        fontWeight = FontWeight.Medium
+    )
+    Spacer(modifier = Modifier.height(24.dp))
+    Text(
+        text = "${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}",
+        color = Color.White,
+        fontSize = 80.sp,
+        fontFamily = FontFamily.Monospace,
+        fontWeight = FontWeight.Bold
+    )
+    Spacer(modifier = Modifier.height(16.dp))
+    Text(
+        text = "Rest period in progress",
+        color = Color(0xFFAAAAAA),
+        fontSize = 14.sp
+    )
+    Spacer(modifier = Modifier.height(48.dp))
+    Text(
+        text = "Phone calls are available",
+        color = Color(0xFF4CAF50),
+        fontSize = 13.sp
+    )
+}
+
+@Composable
+private fun WorkPhaseDisplay(state: TimerState) {
+    var remainingMs by remember { mutableLongStateOf(state.remainingMs) }
+
+    LaunchedEffect(state.phaseStartEpochMs) {
+        while (remainingMs > 0L) {
+            delay(1_000L)
+            remainingMs = state.remainingMs
+        }
+    }
+
+    val mins = remainingMs / 60_000L
+    val secs = (remainingMs % 60_000L) / 1_000L
+
+    Text(
+        text = "20/20 Rule Active",
+        color = Color.White,
+        fontSize = 20.sp,
+        fontWeight = FontWeight.Medium
+    )
+    Spacer(modifier = Modifier.height(16.dp))
+    Text(
+        text = "Screen time remaining",
+        color = Color(0xFFAAAAAA),
+        fontSize = 13.sp
+    )
+    Spacer(modifier = Modifier.height(12.dp))
+    Text(
+        text = "${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}",
+        color = Color(0xFF4CAF50),
+        fontSize = 64.sp,
+        fontFamily = FontFamily.Monospace,
+        fontWeight = FontWeight.Bold
+    )
+}
+
+@Composable
+private fun InitializingDisplay() {
+    CircularProgressIndicator(color = Color.White)
+    Spacer(modifier = Modifier.height(16.dp))
+    Text(text = "Initializing...", color = Color.White, fontSize = 16.sp)
+}

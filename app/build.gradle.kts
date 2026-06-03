@@ -23,21 +23,27 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
         }
     }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
+
     buildFeatures {
         compose = true
     }
 }
+
+// AGP 9.x built-in Kotlin reads JVM target from compileOptions above.
+// kotlinOptions{} and the separate kotlin-android plugin are not used here.
 
 dependencies {
     implementation(platform(libs.androidx.compose.bom))
@@ -48,6 +54,16 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+
+    // DataStore Preferences: DE-backed state persistence, zero annotation processing
+    implementation(libs.androidx.datastore.preferences)
+
+    // Coroutines: timer tick loop, watchdog, phase-transition coroutines
+    implementation(libs.kotlinx.coroutines.android)
+
+    // WorkManager: supplemental resurrection scheduling for Vivo's LMK
+    implementation(libs.androidx.workmanager)
+
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

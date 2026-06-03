@@ -1,0 +1,328 @@
+package com.niranjan.max20.service
+
+import android.app.*
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.ServiceInfo
+import android.graphics.Color
+import android.graphics.PixelFormat
+import android.net.Uri
+import android.os.*
+import android.provider.Settings
+import android.util.Log
+import android.view.*
+import android.widget.*
+import androidx.core.app.NotificationCompat
+import com.niranjan.max20.AppConstants
+import com.niranjan.max20.AppStateManager
+import kotlinx.coroutines.*
+
+/**
+ * KioskOverlayService — the visual fallback shield.
+ *
+ * Role in the layered defense (from research report §1, API comparison table):
+ * "Acts as the ultimate safety net and visual shield. Deployed dynamically as
+ * a fallback only if the system detects that the primary Lock Task Mode has
+ * been compromised or focus is unexpectedly lost."
+ *
+ * Technical implementation:
+ *   - Draws a TYPE_APPLICATION_OVERLAY window using WindowManager. This type
+ *     renders above ALL other windows, including Lock Task Mode exceptions,
+ *     notification shade content, and system dialogs.
+ *   - FLAG_LAYOUT_IN_SCREEN | FLAG_LAYOUT_NO_LIMITS extend the window into the
+ *     status bar and navigation bar cutout areas, preventing peek-through.
+ *   - FLAG_NOT_FOCUSABLE keeps navigation key events in the accessibility
+ *     service chain, preventing the overlay from swallowing back presses it
+ *     shouldn't handle.
+ *   - Touch events on the overlay VIEW are consumed by the view's onTouch
+ *     listener, blocking interaction with any app beneath.
+ *   - The overlay is hidden (not destroyed) during active phone calls so the
+ *     InCallService can render without the visual shield on top.
+ */
+class KioskOverlayService : Service() {
+
+    private var windowManager: WindowManager? = null
+    private var overlayView: View? = null
+    private var timerTextView: TextView? = null
+    private val handler = Handler(Looper.getMainLooper())
+
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var tickJob: Job? = null
+
+    private val lockdownStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                AppConstants.ACTION_START_LOCKDOWN -> {
+                    Log.i(AppConstants.TAG_OVERLAY, "Received START_LOCKDOWN — showing overlay")
+                    showOverlay()
+                }
+                AppConstants.ACTION_END_LOCKDOWN -> {
+                    Log.i(AppConstants.TAG_OVERLAY, "Received END_LOCKDOWN — removing overlay")
+                    removeOverlay()
+                    stopSelf()
+                }
+                AppConstants.ACTION_CALL_STARTED -> {
+                    Log.i(AppConstants.TAG_OVERLAY, "Call started — hiding overlay for call UI")
+                    overlayView?.visibility = View.GONE
+                }
+                AppConstants.ACTION_CALL_ENDED -> {
+                    Log.i(AppConstants.TAG_OVERLAY, "Call ended — restoring overlay")
+                    if (AppStateManager.isLockdownActive) {
+                        overlayView?.visibility = View.VISIBLE
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Lifecycle ──────────────────────────────────────────────────────────
+
+    override fun onCreate() {
+        super.onCreate()
+        Log.i(AppConstants.TAG_OVERLAY, "onCreate: KioskOverlayService initializing")
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        createNotificationChannel()
+
+        val filter = IntentFilter().apply {
+            addAction(AppConstants.ACTION_START_LOCKDOWN)
+            addAction(AppConstants.ACTION_END_LOCKDOWN)
+            addAction(AppConstants.ACTION_CALL_STARTED)
+            addAction(AppConstants.ACTION_CALL_ENDED)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(lockdownStateReceiver, filter, RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(lockdownStateReceiver, filter)
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.i(AppConstants.TAG_OVERLAY,
+            "onStartCommand: action=${intent?.action}, flags=$flags")
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                AppConstants.NOTIFICATION_ID_ENFORCER + 1,
+                buildNotification(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
+        } else {
+            startForeground(AppConstants.NOTIFICATION_ID_ENFORCER + 1, buildNotification())
+        }
+
+        if (!Settings.canDrawOverlays(this)) {
+            Log.e(AppConstants.TAG_OVERLAY,
+                "SYSTEM_ALERT_WINDOW permission not granted — overlay cannot be drawn. " +
+                "User must enable 'Display Over Other Apps' via VivoOptimizationHelper.")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        if (intent?.action == AppConstants.ACTION_START_LOCKDOWN) {
+            showOverlay()
+        }
+
+        return START_STICKY
+    }
+
+    override fun onDestroy() {
+        Log.i(AppConstants.TAG_OVERLAY, "onDestroy: removing overlay and cleaning up")
+        tickJob?.cancel()
+        serviceScope.cancel()
+        removeOverlay()
+        runCatching { unregisterReceiver(lockdownStateReceiver) }.onFailure { ex ->
+            Log.w(AppConstants.TAG_OVERLAY,
+                "lockdownStateReceiver already unregistered: ${ex.message}")
+        }
+        super.onDestroy()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    // ── Overlay Rendering ──────────────────────────────────────────────────
+
+    private fun showOverlay() {
+        if (overlayView != null) {
+            Log.d(AppConstants.TAG_OVERLAY, "Overlay already visible — skipping creation")
+            overlayView?.visibility = View.VISIBLE
+            return
+        }
+
+        if (!Settings.canDrawOverlays(this)) {
+            Log.e(AppConstants.TAG_OVERLAY,
+                "Cannot show overlay: SYSTEM_ALERT_WINDOW permission missing")
+            return
+        }
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+                or WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED,
+            PixelFormat.OPAQUE
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+        }
+
+        val view = buildBlockingView()
+
+        runCatching {
+            windowManager?.addView(view, params)
+            overlayView = view
+            Log.i(AppConstants.TAG_OVERLAY,
+                "Overlay inflated: TYPE_APPLICATION_OVERLAY covers full screen including status/nav bars")
+            startTimerTick()
+        }.onFailure { ex ->
+            Log.e(AppConstants.TAG_OVERLAY,
+                "WindowManager.addView failed — overlay could not be drawn: ${ex.message}")
+        }
+    }
+
+    private fun removeOverlay() {
+        val view = overlayView ?: return
+        runCatching {
+            windowManager?.removeView(view)
+            Log.i(AppConstants.TAG_OVERLAY, "Overlay removed from WindowManager")
+        }.onFailure { ex ->
+            Log.w(AppConstants.TAG_OVERLAY,
+                "removeView failed (view may already be detached): ${ex.message}")
+        }
+        overlayView = null
+        timerTextView = null
+        tickJob?.cancel()
+    }
+
+    private fun buildBlockingView(): View {
+        val root = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            isClickable = true
+            isFocusable = true
+
+            // Consume all touch events — nothing below this view is reachable
+            setOnTouchListener { _, _ -> true }
+        }
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+
+        val titleView = TextView(this).apply {
+            text = getString(com.niranjan.max20.R.string.lockdown_title)
+            textSize = 28f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, 16)
+        }
+
+        timerTextView = TextView(this).apply {
+            text = "20:00"
+            textSize = 72f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            typeface = android.graphics.Typeface.MONOSPACE
+        }
+
+        val subtitleView = TextView(this).apply {
+            text = getString(com.niranjan.max20.R.string.lockdown_subtitle)
+            textSize = 14f
+            setTextColor(Color.LTGRAY)
+            gravity = Gravity.CENTER
+            setPadding(48, 32, 48, 0)
+        }
+
+        val callButton = Button(this).apply {
+            text = getString(com.niranjan.max20.R.string.emergency_call_label)
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#1A73E8"))
+            setPadding(64, 32, 64, 32)
+            isClickable = true
+
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = 64
+                gravity = Gravity.CENTER_HORIZONTAL
+            }
+
+            setOnClickListener {
+                Log.i(AppConstants.TAG_OVERLAY, "Emergency call button pressed during lockdown")
+                val dialIntent = Intent(Intent.ACTION_DIAL).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                // Fire ACTION_DIAL (not ACTION_CALL) — this opens our InCallService's dial UI
+                // which is already whitelisted in the Lock Task sandbox
+                runCatching { startActivity(dialIntent) }.onFailure { ex ->
+                    Log.e(AppConstants.TAG_OVERLAY,
+                        "Failed to launch dial intent: ${ex.message}")
+                }
+            }
+        }
+
+        container.addView(titleView)
+        container.addView(timerTextView)
+        container.addView(subtitleView)
+        container.addView(callButton)
+        root.addView(container)
+
+        return root
+    }
+
+    // ── Timer Display ──────────────────────────────────────────────────────
+
+    private fun startTimerTick() {
+        tickJob?.cancel()
+        var remainingMs = AppConstants.TIMER_LOCKDOWN_MS
+
+        tickJob = serviceScope.launch {
+            while (isActive) {
+                delay(1_000L)
+                remainingMs -= 1_000L
+                if (remainingMs < 0L) remainingMs = 0L
+
+                val mins = remainingMs / 60_000L
+                val secs = (remainingMs % 60_000L) / 1_000L
+                val text = "${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}"
+                timerTextView?.text = text
+            }
+        }
+    }
+
+    // ── Notification ───────────────────────────────────────────────────────
+
+    private fun createNotificationChannel() {
+        val channel = NotificationChannel(
+            AppConstants.NOTIFICATION_CHANNEL_ID,
+            AppConstants.NOTIFICATION_CHANNEL_NAME,
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "Kiosk overlay service notification"
+            setShowBadge(false)
+            enableVibration(false)
+            setSound(null, null)
+        }
+        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        nm.createNotificationChannel(channel)
+    }
+
+    private fun buildNotification(): Notification =
+        NotificationCompat.Builder(this, AppConstants.NOTIFICATION_CHANNEL_ID)
+            .setContentTitle("Lockdown Active")
+            .setContentText("Screen is locked for 20-minute rest period")
+            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .build()
+}
