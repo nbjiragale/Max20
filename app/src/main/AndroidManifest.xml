@@ -19,6 +19,14 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Allows tasks to be reordered to front in onUserLeaveHint -->
     <uses-permission android:name="android.permission.REORDER_TASKS" />
+    <!-- Exact alarms drive the phase transitions. Without these the enforcer's
+         canScheduleExactAlarms() check fails and the 20/20 boundary silently
+         degrades to an inexact alarm. USE_EXACT_ALARM (API 33+) is auto-granted
+         for apps whose core function is a timer; SCHEDULE_EXACT_ALARM covers 31-32. -->
+    <uses-permission
+        android:name="android.permission.SCHEDULE_EXACT_ALARM"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
 
     <!-- ══════════════════════════════════════════════════════════════════
          UI OVERLAY PERMISSIONS

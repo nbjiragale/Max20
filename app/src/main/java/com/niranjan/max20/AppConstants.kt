@@ -20,6 +20,10 @@ object AppConstants {
     const val NOTIFICATION_CHANNEL_NAME = "20/20 Rule Enforcer"
     const val NOTIFICATION_ID_ENFORCER  = 1001
     const val NOTIFICATION_ID_ALERT     = 1002
+    // Distinct ID for the KioskOverlayService foreground notification. Must NOT
+    // collide with NOTIFICATION_ID_ALERT (1002), otherwise the accessibility
+    // "service killed" alert would silently replace the overlay's FGS notification.
+    const val NOTIFICATION_ID_OVERLAY   = 1003
 
     // ── Internal Broadcast Actions ────────────────────────────────────────
     const val ACTION_PHASE_TRANSITION = "com.niranjan.max20.ACTION_PHASE_TRANSITION"

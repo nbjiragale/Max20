@@ -61,9 +61,6 @@ dependencies {
     // Coroutines: timer tick loop, watchdog, phase-transition coroutines
     implementation(libs.kotlinx.coroutines.android)
 
-    // WorkManager: supplemental resurrection scheduling for Vivo's LMK
-    implementation(libs.androidx.workmanager)
-
     testImplementation(libs.junit)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)

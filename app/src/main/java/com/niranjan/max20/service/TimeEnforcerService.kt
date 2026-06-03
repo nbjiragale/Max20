@@ -13,6 +13,8 @@ import com.niranjan.max20.data.TimerState
 import com.niranjan.max20.data.TimerStateStore
 import com.niranjan.max20.ui.LockdownActivity
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * TimeEnforcerService — the process-level heart of the 20/20 cycle.
@@ -35,6 +37,12 @@ import kotlinx.coroutines.*
  */
 class TimeEnforcerService : Service() {
 
+    private companion object {
+        // Tolerance for treating a phase as "expired" at the boundary, absorbing the
+        // small clock skew between the exact alarm and the local tick counter.
+        const val TRANSITION_GRACE_MS = 2_000L
+    }
+
     private lateinit var store: TimerStateStore
     private lateinit var wakeLock: PowerManager.WakeLock
     private lateinit var alarmManager: AlarmManager
@@ -42,6 +50,12 @@ class TimeEnforcerService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var tickJob: Job? = null
+
+    // Serializes phase transitions. The AlarmManager transition and the per-second
+    // tick safety-net can both fire at the phase boundary; without this they could
+    // each flip the phase, producing a spurious double transition (e.g.
+    // WORK→LOCKDOWN→WORK in the same instant).
+    private val transitionMutex = Mutex()
 
     // ── Lifecycle ──────────────────────────────────────────────────────────
 
@@ -78,11 +92,11 @@ class TimeEnforcerService : Service() {
             }
             AppConstants.ACTION_START_LOCKDOWN -> {
                 Log.i(AppConstants.TAG_ENFORCER, "Explicit lockdown-start command received")
-                serviceScope.launch { transitionToLockdown() }
+                serviceScope.launch { transitionMutex.withLock { transitionToLockdown() } }
             }
             AppConstants.ACTION_END_LOCKDOWN -> {
                 Log.i(AppConstants.TAG_ENFORCER, "Explicit lockdown-end command received")
-                serviceScope.launch { transitionToWork() }
+                serviceScope.launch { transitionMutex.withLock { transitionToWork() } }
             }
             else -> {
                 Log.i(AppConstants.TAG_ENFORCER, "Service (re)started — resuming from DE storage")
@@ -141,12 +155,15 @@ class TimeEnforcerService : Service() {
 
     private fun resumeFromPersistedState() {
         serviceScope.launch {
+            // Hold the transition lock for the whole resume so a phase-transition alarm
+            // arriving on a concurrent onStartCommand can't race the resume decision.
+            transitionMutex.withLock {
             val state = store.getState()
 
             if (state == null || !state.isActive) {
                 Log.i(AppConstants.TAG_ENFORCER, "No active state found — starting fresh WORK phase")
                 startNewWorkPhase()
-                return@launch
+                return@withLock
             }
 
             if (state.isExpired) {
@@ -158,7 +175,7 @@ class TimeEnforcerService : Service() {
                     TimerPhase.WORK     -> transitionToLockdown()
                     TimerPhase.LOCKDOWN -> transitionToWork()
                 }
-                return@launch
+                return@withLock
             }
 
             Log.i(AppConstants.TAG_ENFORCER,
@@ -169,17 +186,37 @@ class TimeEnforcerService : Service() {
                 withContext(Dispatchers.Main) { enforceLockdownUI() }
             }
             startTickJob(state.phase, state.remainingMs)
+            }
         }
     }
 
     private fun handlePhaseTransitionAsync() {
         serviceScope.launch {
-            val state = store.getState()
-            val current = state?.phase ?: TimerPhase.WORK
-            Log.i(AppConstants.TAG_ENFORCER, "handlePhaseTransition: current=$current")
-            when (current) {
-                TimerPhase.WORK     -> transitionToLockdown()
-                TimerPhase.LOCKDOWN -> transitionToWork()
+            transitionMutex.withLock {
+                val state = store.getState()
+                if (state == null || !state.isActive) {
+                    Log.i(AppConstants.TAG_ENFORCER,
+                        "handlePhaseTransition: no active state — starting fresh WORK phase")
+                    startNewWorkPhase()
+                    return@withLock
+                }
+
+                // Idempotency guard against the alarm + tick-safety-net race: a phase
+                // is only advanced when the CURRENT phase has actually run its course.
+                // A concurrent trigger that arrives after the first transition will see
+                // a freshly-started (non-expired) phase and is ignored.
+                if (state.remainingMs > TRANSITION_GRACE_MS) {
+                    Log.d(AppConstants.TAG_ENFORCER,
+                        "handlePhaseTransition: ${state.phase} not expired " +
+                        "(remaining=${state.remainingMs}ms) — duplicate trigger ignored")
+                    return@withLock
+                }
+
+                Log.i(AppConstants.TAG_ENFORCER, "handlePhaseTransition: advancing from ${state.phase}")
+                when (state.phase) {
+                    TimerPhase.WORK     -> transitionToLockdown()
+                    TimerPhase.LOCKDOWN -> transitionToWork()
+                }
             }
         }
     }
@@ -232,19 +269,33 @@ class TimeEnforcerService : Service() {
     private fun enforceLockdownUI() {
         Log.i(AppConstants.TAG_ENFORCER, "enforceLockdownUI: broadcasting + starting KioskOverlay")
         sendBroadcast(Intent(AppConstants.ACTION_START_LOCKDOWN).setPackage(packageName))
-        startForegroundService(
-            Intent(this, KioskOverlayService::class.java)
-                .apply { action = AppConstants.ACTION_START_LOCKDOWN }
-        )
-        startActivity(
-            Intent(this, LockdownActivity::class.java).apply {
-                addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
-                    Intent.FLAG_ACTIVITY_SINGLE_TOP
-                )
-            }
-        )
+        // Both the FGS start and the activity start can be rejected by background-start
+        // restrictions on modern Android/OEM builds. The broadcast above already drives
+        // the (already-running) overlay and activity, so a failure here is non-fatal.
+        runCatching {
+            startForegroundService(
+                Intent(this, KioskOverlayService::class.java)
+                    .apply { action = AppConstants.ACTION_START_LOCKDOWN }
+            )
+        }.onFailure { ex ->
+            Log.e(AppConstants.TAG_ENFORCER,
+                "Could not start KioskOverlayService (${ex.javaClass.simpleName}: ${ex.message})")
+        }
+        runCatching {
+            startActivity(
+                Intent(this, LockdownActivity::class.java).apply {
+                    addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                        Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    )
+                }
+            )
+        }.onFailure { ex ->
+            Log.e(AppConstants.TAG_ENFORCER,
+                "Could not launch LockdownActivity (${ex.javaClass.simpleName}: ${ex.message}) — " +
+                "overlay provides coverage")
+        }
     }
 
     private fun releaseLockdownUI() {
@@ -346,14 +397,24 @@ class TimeEnforcerService : Service() {
 
     private fun promoteForeground(text: String) {
         val notification = buildNotification(text)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(
-                AppConstants.NOTIFICATION_ID_ENFORCER,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-            )
-        } else {
-            startForeground(AppConstants.NOTIFICATION_ID_ENFORCER, notification)
+        // When the OS restarts us from the background (resurrection alarm, START_STICKY,
+        // boot), startForeground can throw ForegroundServiceStartNotAllowedException on
+        // Android 12+. Swallowing it keeps the process alive so START_STICKY / the next
+        // legal entry point can promote us, rather than crash-looping.
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    AppConstants.NOTIFICATION_ID_ENFORCER,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                )
+            } else {
+                startForeground(AppConstants.NOTIFICATION_ID_ENFORCER, notification)
+            }
+        }.onFailure { ex ->
+            Log.e(AppConstants.TAG_ENFORCER,
+                "startForeground failed (${ex.javaClass.simpleName}: ${ex.message}) — " +
+                "background-start restriction")
         }
     }
 

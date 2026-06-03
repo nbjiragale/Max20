@@ -48,6 +48,8 @@ class KioskOverlayService : Service() {
     private var timerTextView: TextView? = null
     private val handler = Handler(Looper.getMainLooper())
 
+    private val store by lazy { com.niranjan.max20.data.TimerStateStore.getInstance(this) }
+
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var tickJob: Job? = null
 
@@ -102,14 +104,28 @@ class KioskOverlayService : Service() {
         Log.i(AppConstants.TAG_OVERLAY,
             "onStartCommand: action=${intent?.action}, flags=$flags")
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(
-                AppConstants.NOTIFICATION_ID_ENFORCER + 1,
-                buildNotification(),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-            )
-        } else {
-            startForeground(AppConstants.NOTIFICATION_ID_ENFORCER + 1, buildNotification())
+        // startForeground can throw ForegroundServiceStartNotAllowedException when the
+        // OS started us from the background (e.g. resurrection / boot on Android 12+).
+        // A crash here would defeat the very resilience this service provides, so we
+        // guard it and bail out gracefully instead of letting the process die.
+        val promoted = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    AppConstants.NOTIFICATION_ID_OVERLAY,
+                    buildNotification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                )
+            } else {
+                startForeground(AppConstants.NOTIFICATION_ID_OVERLAY, buildNotification())
+            }
+        }.onFailure { ex ->
+            Log.e(AppConstants.TAG_OVERLAY,
+                "startForeground failed (${ex.javaClass.simpleName}: ${ex.message}) — " +
+                "background-start restriction; stopping overlay service")
+        }
+        if (promoted.isFailure) {
+            stopSelf()
+            return START_NOT_STICKY
         }
 
         if (!Settings.canDrawOverlays(this)) {
@@ -283,18 +299,27 @@ class KioskOverlayService : Service() {
 
     private fun startTimerTick() {
         tickJob?.cancel()
-        var remainingMs = AppConstants.TIMER_LOCKDOWN_MS
 
         tickJob = serviceScope.launch {
             while (isActive) {
-                delay(1_000L)
-                remainingMs -= 1_000L
-                if (remainingMs < 0L) remainingMs = 0L
+                // Derive the countdown from the authoritative persisted state rather
+                // than a local counter seeded with the full duration. The overlay can
+                // be (re)created mid-lockdown — after a call ends, on boot resume, or
+                // after a process restart — at which point a fresh 20:00 would be wrong.
+                val state = store.getState()
+                val remainingMs = if (state != null && state.phase == com.niranjan.max20.data.TimerPhase.LOCKDOWN) {
+                    state.remainingMs
+                } else {
+                    AppConstants.TIMER_LOCKDOWN_MS
+                }
 
                 val mins = remainingMs / 60_000L
                 val secs = (remainingMs % 60_000L) / 1_000L
-                val text = "${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}"
-                timerTextView?.text = text
+                timerTextView?.text =
+                    "${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}"
+
+                if (remainingMs <= 0L) break
+                delay(1_000L)
             }
         }
     }

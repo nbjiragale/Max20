@@ -162,6 +162,8 @@ class LockdownActivity : ComponentActivity() {
                         "ROLE_HOME not granted — home button will not be captured. " +
                         "KioskOverlayService acts as coverage.")
                 }
+                // Chain the next role request now that the HOME dialog has resolved.
+                requestRoleIfMissing(RoleManager.ROLE_DIALER, REQUEST_ROLE_DIALER)
             }
             REQUEST_ROLE_DIALER -> {
                 val granted = resultCode == RESULT_OK
@@ -283,33 +285,39 @@ class LockdownActivity : ComponentActivity() {
 
     // ── Role Requests ──────────────────────────────────────────────────────
 
+    /**
+     * Roles must be requested one at a time: the platform only surfaces a single
+     * role-request dialog, so firing HOME and DIALER back-to-back means the second
+     * request is silently dropped. We request HOME first and chain DIALER from the
+     * HOME result in onActivityResult().
+     */
     private fun requestSystemRoles() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val roleManager = getSystemService(RoleManager::class.java) ?: run {
-                Log.e(AppConstants.TAG_ENFORCER, "RoleManager is null — cannot request HOME role")
-                return
-            }
-
-            if (!roleManager.isRoleHeld(RoleManager.ROLE_HOME)) {
-                Log.i(AppConstants.TAG_ENFORCER,
-                    "Requesting ROLE_HOME — this routes all home-button presses to LockdownActivity")
-                val intent = roleManager.createRequestRoleIntent(RoleManager.ROLE_HOME)
-                @Suppress("DEPRECATION")
-                startActivityForResult(intent, REQUEST_ROLE_HOME)
-            } else {
-                Log.i(AppConstants.TAG_ENFORCER, "ROLE_HOME already held")
-            }
-
-            if (!roleManager.isRoleHeld(RoleManager.ROLE_DIALER)) {
-                Log.i(AppConstants.TAG_CALL,
-                    "Requesting ROLE_DIALER — routes all call states to Max20InCallService")
-                val intent = roleManager.createRequestRoleIntent(RoleManager.ROLE_DIALER)
-                @Suppress("DEPRECATION")
-                startActivityForResult(intent, REQUEST_ROLE_DIALER)
-            } else {
-                Log.i(AppConstants.TAG_CALL, "ROLE_DIALER already held")
-            }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
+        if (!requestRoleIfMissing(RoleManager.ROLE_HOME, REQUEST_ROLE_HOME)) {
+            // HOME already held (or RoleManager unavailable) — move straight to DIALER.
+            requestRoleIfMissing(RoleManager.ROLE_DIALER, REQUEST_ROLE_DIALER)
         }
+    }
+
+    /**
+     * Launches the role-request dialog if the role isn't already held.
+     * @return true if a request dialog was launched, false if the role is already
+     *         held or could not be requested.
+     */
+    private fun requestRoleIfMissing(role: String, requestCode: Int): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
+        val roleManager = getSystemService(RoleManager::class.java) ?: run {
+            Log.e(AppConstants.TAG_ENFORCER, "RoleManager is null — cannot request role $role")
+            return false
+        }
+        if (!roleManager.isRoleAvailable(role) || roleManager.isRoleHeld(role)) {
+            Log.i(AppConstants.TAG_ENFORCER, "Role $role already held or unavailable — skipping request")
+            return false
+        }
+        Log.i(AppConstants.TAG_ENFORCER, "Requesting role $role")
+        @Suppress("DEPRECATION")
+        startActivityForResult(roleManager.createRequestRoleIntent(role), requestCode)
+        return true
     }
 
     // ── Service Initialization ─────────────────────────────────────────────
