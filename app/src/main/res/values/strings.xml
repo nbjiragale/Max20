@@ -12,4 +12,5 @@
     <string name="work_timer_label">Screen time remaining</string>
     <string name="emergency_call_label">Make a Call</string>
     <string name="device_admin_description">Max20 requires Device Administrator access to prevent uninstallation during active lockdown periods. This protects your digital wellbeing commitment.</string>
+    <string name="onboarding_started">20/20 Rule started. The first 20-minute window has begun.</string>
 </resources>

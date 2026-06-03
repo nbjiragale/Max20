@@ -189,18 +189,21 @@ class LockdownAccessibilityService : AccessibilityService() {
     // ── Service Self-Configuration ─────────────────────────────────────────
 
     private fun configureServiceCapabilities() {
-        serviceInfo = serviceInfo?.apply {
-            eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
-                         AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
-            feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-            flags = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
-                    AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
-            notificationTimeout = 100L
-        } ?: run {
+        // Never assign null back to serviceInfo: setServiceInfo(null) throws. If the
+        // framework hasn't populated it yet, fall back to the XML configuration.
+        val info = serviceInfo
+        if (info == null) {
             Log.e(AppConstants.TAG_ACCESSIBILITY,
-                "serviceInfo was null during configuration — using XML defaults")
-            null
+                "serviceInfo was null during configuration — relying on XML defaults")
+            return
         }
+        info.eventTypes = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
+                          AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+        info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
+        info.flags = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
+                     AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+        info.notificationTimeout = 100L
+        serviceInfo = info
         Log.d(AppConstants.TAG_ACCESSIBILITY, "Service capabilities configured dynamically")
     }
 
