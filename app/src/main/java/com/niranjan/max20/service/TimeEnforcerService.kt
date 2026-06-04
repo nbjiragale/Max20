@@ -268,7 +268,10 @@ class TimeEnforcerService : Service() {
 
     private fun enforceLockdownUI() {
         Log.i(AppConstants.TAG_ENFORCER, "enforceLockdownUI: broadcasting + starting KioskOverlay")
-        sendBroadcast(Intent(AppConstants.ACTION_START_LOCKDOWN).setPackage(packageName))
+        sendBroadcast(
+            Intent(AppConstants.ACTION_START_LOCKDOWN).setPackage(packageName),
+            AppConstants.PERMISSION_INTERNAL
+        )
         // Both the FGS start and the activity start can be rejected by background-start
         // restrictions on modern Android/OEM builds. The broadcast above already drives
         // the (already-running) overlay and activity, so a failure here is non-fatal.
@@ -300,7 +303,10 @@ class TimeEnforcerService : Service() {
 
     private fun releaseLockdownUI() {
         Log.i(AppConstants.TAG_ENFORCER, "releaseLockdownUI: stopping KioskOverlay + broadcasting unlock")
-        sendBroadcast(Intent(AppConstants.ACTION_END_LOCKDOWN).setPackage(packageName))
+        sendBroadcast(
+            Intent(AppConstants.ACTION_END_LOCKDOWN).setPackage(packageName),
+            AppConstants.PERMISSION_INTERNAL
+        )
         stopService(Intent(this, KioskOverlayService::class.java))
     }
 

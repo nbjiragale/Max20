@@ -91,7 +91,8 @@ class CallWhitelistManager(private val context: Context) {
                         "TelephonyManager: call state=${stateLabel(state)} — broadcasting CALL_STARTED")
                     AppStateManager.onCallStateChanged(active = true)
                     context.sendBroadcast(
-                        Intent(AppConstants.ACTION_CALL_STARTED).setPackage(context.packageName)
+                        Intent(AppConstants.ACTION_CALL_STARTED).setPackage(context.packageName),
+                        AppConstants.PERMISSION_INTERNAL
                     )
                 }
             }
@@ -101,7 +102,8 @@ class CallWhitelistManager(private val context: Context) {
                         "TelephonyManager: IDLE — broadcasting CALL_ENDED")
                     AppStateManager.onCallStateChanged(active = false)
                     context.sendBroadcast(
-                        Intent(AppConstants.ACTION_CALL_ENDED).setPackage(context.packageName)
+                        Intent(AppConstants.ACTION_CALL_ENDED).setPackage(context.packageName),
+                        AppConstants.PERMISSION_INTERNAL
                     )
                 }
             }

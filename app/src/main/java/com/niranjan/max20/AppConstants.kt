@@ -26,6 +26,9 @@ object AppConstants {
     const val NOTIFICATION_ID_OVERLAY   = 1003
 
     // ── Internal Broadcast Actions ────────────────────────────────────────
+    // Guarded by PERMISSION_INTERNAL (signature-level) so only this app — never a
+    // side-loaded helper trying to defeat the lockdown — can send or receive them.
+    const val PERMISSION_INTERNAL     = "com.niranjan.max20.permission.INTERNAL_BROADCAST"
     const val ACTION_PHASE_TRANSITION = "com.niranjan.max20.ACTION_PHASE_TRANSITION"
     const val ACTION_START_LOCKDOWN   = "com.niranjan.max20.ACTION_START_LOCKDOWN"
     const val ACTION_END_LOCKDOWN     = "com.niranjan.max20.ACTION_END_LOCKDOWN"

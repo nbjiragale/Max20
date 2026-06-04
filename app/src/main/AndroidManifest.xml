@@ -3,6 +3,18 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!-- ══════════════════════════════════════════════════════════════════
+         INTERNAL BROADCAST PERMISSION
+         Signature-level: only components signed with this app's key may send or
+         receive the lockdown/call control broadcasts. Without this, on API < 33
+         the context-registered receivers are exported and any app could broadcast
+         ACTION_END_LOCKDOWN / ACTION_CALL_STARTED to escape or suspend the lockdown.
+         ═══════════════════════════════════════════════════════════════ -->
+    <permission
+        android:name="com.niranjan.max20.permission.INTERNAL_BROADCAST"
+        android:protectionLevel="signature" />
+    <uses-permission android:name="com.niranjan.max20.permission.INTERNAL_BROADCAST" />
+
+    <!-- ══════════════════════════════════════════════════════════════════
          PROCESS LIFECYCLE PERMISSIONS
          Required for foreground service survival against Vivo i-Manager
          ═══════════════════════════════════════════════════════════════ -->

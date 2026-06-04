@@ -143,13 +143,19 @@ class Max20InCallService : InCallService() {
 
     private fun notifyCallStarted() {
         AppStateManager.onCallStateChanged(active = true)
-        sendBroadcast(Intent(AppConstants.ACTION_CALL_STARTED).setPackage(packageName))
+        sendBroadcast(
+            Intent(AppConstants.ACTION_CALL_STARTED).setPackage(packageName),
+            AppConstants.PERMISSION_INTERNAL
+        )
         Log.d(AppConstants.TAG_CALL, "Broadcast ACTION_CALL_STARTED sent")
     }
 
     private fun notifyCallEnded() {
         AppStateManager.onCallStateChanged(active = false)
-        sendBroadcast(Intent(AppConstants.ACTION_CALL_ENDED).setPackage(packageName))
+        sendBroadcast(
+            Intent(AppConstants.ACTION_CALL_ENDED).setPackage(packageName),
+            AppConstants.PERMISSION_INTERNAL
+        )
         Log.d(AppConstants.TAG_CALL, "Broadcast ACTION_CALL_ENDED sent")
     }
 

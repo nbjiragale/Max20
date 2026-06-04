@@ -96,7 +96,9 @@ class KioskOverlayService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(lockdownStateReceiver, filter, RECEIVER_NOT_EXPORTED)
         } else {
-            registerReceiver(lockdownStateReceiver, filter)
+            // Pre-33 has no NOT_EXPORTED flag; gate delivery with the signature
+            // permission so only this app can reach the receiver.
+            registerReceiver(lockdownStateReceiver, filter, AppConstants.PERMISSION_INTERNAL, null)
         }
     }
 

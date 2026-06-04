@@ -341,7 +341,8 @@ class LockdownActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(lockdownStateReceiver, filter, RECEIVER_NOT_EXPORTED)
         } else {
-            registerReceiver(lockdownStateReceiver, filter)
+            // Pre-33: gate delivery with the signature permission (no NOT_EXPORTED flag).
+            registerReceiver(lockdownStateReceiver, filter, AppConstants.PERMISSION_INTERNAL, null)
         }
     }
 }

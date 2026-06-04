@@ -74,7 +74,8 @@ class LockdownAccessibilityService : AccessibilityService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(phaseChangeReceiver, filter, RECEIVER_NOT_EXPORTED)
         } else {
-            registerReceiver(phaseChangeReceiver, filter)
+            // Pre-33: gate delivery with the signature permission (no NOT_EXPORTED flag).
+            registerReceiver(phaseChangeReceiver, filter, AppConstants.PERMISSION_INTERNAL, null)
         }
 
         configureServiceCapabilities()
