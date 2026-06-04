@@ -58,6 +58,13 @@ class MainActivity : ComponentActivity() {
             refreshTick++
         }
 
+    // READ_PHONE_STATE is a runtime permission used to detect call state so the
+    // lockdown can step aside during calls.
+    private val phonePermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            refreshTick++
+        }
+
     // Generic launcher for settings/role screens that return a result (e.g. roles).
     private val settingsLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
@@ -89,6 +96,10 @@ class MainActivity : ComponentActivity() {
         } else {
             true
         }
+
+    fun isPhoneStateGranted(): Boolean =
+        checkSelfPermission(android.Manifest.permission.READ_PHONE_STATE) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
 
     fun isOverlayGranted(): Boolean = Settings.canDrawOverlays(this)
 
@@ -146,6 +157,10 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             notificationsPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
         }
+    }
+
+    fun requestPhoneState() {
+        phonePermissionLauncher.launch(android.Manifest.permission.READ_PHONE_STATE)
     }
 
     fun requestOverlay() {
@@ -318,6 +333,15 @@ private fun OnboardingContent(activity: MainActivity) {
                 onAction = activity::requestUsageAccess,
             )
         )
+        add(
+            SetupItem(
+                title = "Phone access (pause for calls)",
+                description = "Detects calls so the lockdown steps aside and the phone stays usable.",
+                granted = activity.isPhoneStateGranted(),
+                required = false,
+                onAction = activity::requestPhoneState,
+            )
+        )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             add(
                 SetupItem(
@@ -326,15 +350,6 @@ private fun OnboardingContent(activity: MainActivity) {
                     granted = activity.isRoleHeld(RoleManager.ROLE_HOME),
                     required = false,
                     onAction = { activity.requestRole(RoleManager.ROLE_HOME) },
-                )
-            )
-            add(
-                SetupItem(
-                    title = "Default phone app",
-                    description = "Allows phone calls during lockdown without breaking it.",
-                    granted = activity.isRoleHeld(RoleManager.ROLE_DIALER),
-                    required = false,
-                    onAction = { activity.requestRole(RoleManager.ROLE_DIALER) },
                 )
             )
         }

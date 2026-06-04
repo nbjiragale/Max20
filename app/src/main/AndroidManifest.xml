@@ -51,13 +51,11 @@
 
     <!-- ══════════════════════════════════════════════════════════════════
          TELEPHONY PERMISSIONS
-         Strategy B InCallService: handle calls inside lockdown sandbox
+         We do NOT replace the system dialer. READ_PHONE_STATE lets us detect
+         call state so the lockdown can step aside (hide the overlay, suspend
+         enforcement, whitelist the system dialer) while a call is in progress.
          ═══════════════════════════════════════════════════════════════ -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
-    <uses-permission android:name="android.permission.CALL_PHONE" />
-    <!-- Allows managing calls without being the default dialer initially -->
-    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
-    <uses-permission android:name="android.permission.READ_CALL_LOG" />
 
     <!-- ══════════════════════════════════════════════════════════════════
          USAGE STATS PERMISSIONS
@@ -198,28 +196,6 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
 
-        <!-- ── Max20InCallService ──────────────────────────────────────
-             Strategy B telephony integration: our app IS the dialer.
-             Extending InCallService and requesting ROLE_DIALER means
-             Android routes all call state directly to this class, entirely
-             avoiding Lock Task Mode UserCallActivity violations.
-             android.telecom.IN_CALL_SERVICE_UI=true → we provide call UI.
-             ─────────────────────────────────────────────────────────── -->
-        <service
-            android:name=".service.Max20InCallService"
-            android:exported="true"
-            android:directBootAware="true"
-            android:permission="android.permission.BIND_INCALL_SERVICE">
-            <meta-data
-                android:name="android.telecom.IN_CALL_SERVICE_UI"
-                android:value="true" />
-            <meta-data
-                android:name="android.telecom.IN_CALL_SERVICE_CAR_MODE_UI"
-                android:value="false" />
-            <intent-filter>
-                <action android:name="android.telecom.InCallService" />
-            </intent-filter>
-        </service>
 
         <!-- ── Max20DeviceAdminReceiver ────────────────────────────────
              Grants Device Admin status so the OS blocks uninstallation

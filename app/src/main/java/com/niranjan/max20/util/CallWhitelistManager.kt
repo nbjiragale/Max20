@@ -12,13 +12,13 @@ import com.niranjan.max20.AppStateManager
 import java.util.concurrent.Executor
 
 /**
- * CallWhitelistManager — supplemental call-state detection layer.
+ * CallWhitelistManager — the call-state detection layer.
  *
- * The primary call-state mechanism is Max20InCallService.onCallAdded/Removed.
- * This class provides a safety-net listener via TelephonyManager for cases
- * where the InCallService is not yet bound or the ROLE_DIALER hasn't been
- * granted. It also exposes utility functions for querying the dynamic dialer
- * package list used by TimeEnforcerService when constructing the DPM whitelist.
+ * The app does not replace the system dialer, so call state is observed via
+ * TelephonyManager. Started by TimeEnforcerService, it sets AppStateManager
+ * .isCallActive and broadcasts ACTION_CALL_STARTED/ENDED so the overlay hides
+ * and accessibility enforcement steps aside while a call is in progress, then
+ * restores the lockdown when the call ends. Requires READ_PHONE_STATE.
  *
  * API levels:
  *   API 31+: TelephonyCallback (non-deprecated)

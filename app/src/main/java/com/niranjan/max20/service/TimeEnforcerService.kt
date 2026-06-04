@@ -12,6 +12,7 @@ import com.niranjan.max20.data.TimerPhase
 import com.niranjan.max20.data.TimerState
 import com.niranjan.max20.data.TimerStateStore
 import com.niranjan.max20.ui.LockdownActivity
+import com.niranjan.max20.util.CallWhitelistManager
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -57,6 +58,8 @@ class TimeEnforcerService : Service() {
     // WORK→LOCKDOWN→WORK in the same instant).
     private val transitionMutex = Mutex()
 
+    private var callWhitelistManager: CallWhitelistManager? = null
+
     // ── Lifecycle ──────────────────────────────────────────────────────────
 
     override fun onCreate() {
@@ -74,6 +77,19 @@ class TimeEnforcerService : Service() {
         ).apply { setReferenceCounted(false) }
 
         createNotificationChannel()
+
+        // Listen for system call state so the lockdown can step aside during calls.
+        // We are NOT the default dialer; this is how isCallActive gets produced.
+        // startListening needs READ_PHONE_STATE — if it isn't granted yet the call
+        // gracefully fails and the lockdown simply won't pause for calls.
+        callWhitelistManager = CallWhitelistManager(this).also { mgr ->
+            runCatching { mgr.startListening() }.onFailure { ex ->
+                Log.w(AppConstants.TAG_ENFORCER,
+                    "Call-state listener not started (${ex.javaClass.simpleName}: ${ex.message}) — " +
+                    "READ_PHONE_STATE likely not granted")
+            }
+        }
+
         AppStateManager.onServiceLifecycle(alive = true)
     }
 
@@ -123,6 +139,7 @@ class TimeEnforcerService : Service() {
             "onDestroy: Service being destroyed — inspecting state before death")
 
         AppStateManager.onServiceLifecycle(alive = false)
+        runCatching { callWhitelistManager?.stopListening() }
         tickJob?.cancel()
 
         // Synchronous read required: serviceScope is about to be cancelled

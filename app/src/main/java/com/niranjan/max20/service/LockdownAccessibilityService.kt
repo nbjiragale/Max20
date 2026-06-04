@@ -45,6 +45,24 @@ class LockdownAccessibilityService : AccessibilityService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var watchdogJob: Job? = null
 
+    // Cached default-dialer package (resolved lazily, briefly memoised). Read on the
+    // accessibility event hot-path, so we avoid a TelecomManager query per event.
+    @Volatile private var cachedDialerPackage: String? = null
+    @Volatile private var cachedDialerAtMs: Long = 0L
+
+    private fun defaultDialerPackage(): String? {
+        val now = System.currentTimeMillis()
+        if (now - cachedDialerAtMs < 60_000L && cachedDialerPackage != null) {
+            return cachedDialerPackage
+        }
+        val pkg = runCatching {
+            (getSystemService(TELECOM_SERVICE) as android.telecom.TelecomManager).defaultDialerPackage
+        }.getOrNull()
+        cachedDialerPackage = pkg
+        cachedDialerAtMs = now
+        return pkg
+    }
+
     private val phaseChangeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
@@ -132,10 +150,12 @@ class LockdownAccessibilityService : AccessibilityService() {
         }
 
         // ── Active call exception ───────────────────────────────────────
-        // During a call, the telephony UI must take the foreground.
-        // Our InCallService renders within our package so this mostly
-        // covers edge cases where the system telecom UI breaks through.
-        if (AppStateManager.isCallActive && packageName in AppConstants.TELEPHONY_WHITELIST) {
+        // During a call the system dialer / in-call UI must be allowed to the
+        // foreground. We allow the static telephony set plus the device's actual
+        // default dialer, resolved dynamically (covers OEM dialers not in the list).
+        if (AppStateManager.isCallActive &&
+            (packageName in AppConstants.TELEPHONY_WHITELIST || packageName == defaultDialerPackage())
+        ) {
             Log.d(AppConstants.TAG_ACCESSIBILITY,
                 "Allowing telephony package during active call: $packageName")
             return

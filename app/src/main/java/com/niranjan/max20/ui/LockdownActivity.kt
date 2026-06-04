@@ -8,7 +8,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import android.os.Bundle
-import android.telecom.TelecomManager
 import android.util.Log
 import android.view.WindowInsetsController
 import android.view.WindowManager
@@ -69,8 +68,7 @@ import kotlinx.coroutines.launch
 class LockdownActivity : ComponentActivity() {
 
     private companion object {
-        const val REQUEST_ROLE_HOME   = 1001
-        const val REQUEST_ROLE_DIALER = 1002
+        const val REQUEST_ROLE_HOME = 1001
     }
 
     private lateinit var store: TimerStateStore
@@ -152,28 +150,13 @@ class LockdownActivity : ComponentActivity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        when (requestCode) {
-            REQUEST_ROLE_HOME -> {
-                val granted = resultCode == RESULT_OK
-                Log.i(AppConstants.TAG_ENFORCER,
-                    "ROLE_HOME request result: granted=$granted")
-                if (!granted) {
-                    Log.w(AppConstants.TAG_ENFORCER,
-                        "ROLE_HOME not granted — home button will not be captured. " +
-                        "KioskOverlayService acts as coverage.")
-                }
-                // Chain the next role request now that the HOME dialog has resolved.
-                requestRoleIfMissing(RoleManager.ROLE_DIALER, REQUEST_ROLE_DIALER)
-            }
-            REQUEST_ROLE_DIALER -> {
-                val granted = resultCode == RESULT_OK
-                Log.i(AppConstants.TAG_CALL,
-                    "ROLE_DIALER request result: granted=$granted")
-                if (!granted) {
-                    Log.w(AppConstants.TAG_CALL,
-                        "ROLE_DIALER not granted — call handling falls back to system dialer + " +
-                        "DPM package whitelist. Lock Task violations may occur on Vivo devices.")
-                }
+        if (requestCode == REQUEST_ROLE_HOME) {
+            val granted = resultCode == RESULT_OK
+            Log.i(AppConstants.TAG_ENFORCER, "ROLE_HOME request result: granted=$granted")
+            if (!granted) {
+                Log.w(AppConstants.TAG_ENFORCER,
+                    "ROLE_HOME not granted — home button will not be captured. " +
+                    "KioskOverlayService acts as coverage.")
             }
         }
     }
@@ -287,16 +270,14 @@ class LockdownActivity : ComponentActivity() {
 
     /**
      * Roles must be requested one at a time: the platform only surfaces a single
-     * role-request dialog, so firing HOME and DIALER back-to-back means the second
-     * request is silently dropped. We request HOME first and chain DIALER from the
-     * HOME result in onActivityResult().
+     * role-request dialog. We request ROLE_HOME so the Home button returns to the
+     * lockdown screen. We deliberately do NOT request ROLE_DIALER: replacing the
+     * system dialer requires a full in-call UI we don't provide, and would break
+     * calling. Calls are instead allowed through via call-state detection.
      */
     private fun requestSystemRoles() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
-        if (!requestRoleIfMissing(RoleManager.ROLE_HOME, REQUEST_ROLE_HOME)) {
-            // HOME already held (or RoleManager unavailable) — move straight to DIALER.
-            requestRoleIfMissing(RoleManager.ROLE_DIALER, REQUEST_ROLE_DIALER)
-        }
+        requestRoleIfMissing(RoleManager.ROLE_HOME, REQUEST_ROLE_HOME)
     }
 
     /**

@@ -279,8 +279,9 @@ class KioskOverlayService : Service() {
                 val dialIntent = Intent(Intent.ACTION_DIAL).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
-                // Fire ACTION_DIAL (not ACTION_CALL) — this opens our InCallService's dial UI
-                // which is already whitelisted in the Lock Task sandbox
+                // Fire ACTION_DIAL (not ACTION_CALL) — opens the system dialer. Once the
+                // call is placed, call-state detection sets isCallActive, which hides this
+                // overlay and lets the dialer/in-call UI through.
                 runCatching { startActivity(dialIntent) }.onFailure { ex ->
                     Log.e(AppConstants.TAG_OVERLAY,
                         "Failed to launch dial intent: ${ex.message}")
