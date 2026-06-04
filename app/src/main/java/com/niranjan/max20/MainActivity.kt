@@ -2,7 +2,6 @@ package com.niranjan.max20
 
 import android.app.AppOpsManager
 import android.app.admin.DevicePolicyManager
-import android.app.role.RoleManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -141,12 +140,6 @@ class MainActivity : ComponentActivity() {
         return dpm.isAdminActive(ComponentName(this, Max20DeviceAdminReceiver::class.java))
     }
 
-    fun isRoleHeld(role: String): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
-        val rm = getSystemService(RoleManager::class.java) ?: return false
-        return rm.isRoleAvailable(role) && rm.isRoleHeld(role)
-    }
-
     /** The minimum set of grants required for the enforcer to function at all. */
     fun coreReady(): Boolean =
         areNotificationsGranted() && isOverlayGranted() && isAccessibilityEnabled()
@@ -216,14 +209,6 @@ class MainActivity : ComponentActivity() {
             )
         }
         launchSafely(intent)
-    }
-
-    fun requestRole(role: String) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
-        val rm = getSystemService(RoleManager::class.java) ?: return
-        if (!rm.isRoleAvailable(role) || rm.isRoleHeld(role)) return
-        runCatching { settingsLauncher.launch(rm.createRequestRoleIntent(role)) }
-            .onFailure { Log.e("Max20:Onboarding", "Failed to request role $role: ${it.message}") }
     }
 
     fun startEnforcer() {
@@ -342,17 +327,6 @@ private fun OnboardingContent(activity: MainActivity) {
                 onAction = activity::requestPhoneState,
             )
         )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            add(
-                SetupItem(
-                    title = "Default home app",
-                    description = "Routes the Home button back to the lockdown screen.",
-                    granted = activity.isRoleHeld(RoleManager.ROLE_HOME),
-                    required = false,
-                    onAction = { activity.requestRole(RoleManager.ROLE_HOME) },
-                )
-            )
-        }
     }
 
     val coreReady = activity.coreReady()

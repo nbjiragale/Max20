@@ -59,6 +59,7 @@ class TimeEnforcerService : Service() {
     private val transitionMutex = Mutex()
 
     private var callWhitelistManager: CallWhitelistManager? = null
+    private var callListenerStarted = false
 
     // ── Lifecycle ──────────────────────────────────────────────────────────
 
@@ -77,20 +78,33 @@ class TimeEnforcerService : Service() {
         ).apply { setReferenceCounted(false) }
 
         createNotificationChannel()
-
-        // Listen for system call state so the lockdown can step aside during calls.
-        // We are NOT the default dialer; this is how isCallActive gets produced.
-        // startListening needs READ_PHONE_STATE — if it isn't granted yet the call
-        // gracefully fails and the lockdown simply won't pause for calls.
-        callWhitelistManager = CallWhitelistManager(this).also { mgr ->
-            runCatching { mgr.startListening() }.onFailure { ex ->
-                Log.w(AppConstants.TAG_ENFORCER,
-                    "Call-state listener not started (${ex.javaClass.simpleName}: ${ex.message}) — " +
-                    "READ_PHONE_STATE likely not granted")
-            }
-        }
-
+        ensureCallListener()
         AppStateManager.onServiceLifecycle(alive = true)
+    }
+
+    /**
+     * Starts system call-state detection so the lockdown can step aside during
+     * calls (we are NOT the default dialer; this is what sets isCallActive).
+     * Needs READ_PHONE_STATE — retried on each onStartCommand so it engages once
+     * the user grants the permission, without requiring a service restart.
+     */
+    private fun ensureCallListener() {
+        if (callListenerStarted) return
+        if (checkSelfPermission(android.Manifest.permission.READ_PHONE_STATE)
+            != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.w(AppConstants.TAG_ENFORCER,
+                "Call-state listener not started — READ_PHONE_STATE not granted; " +
+                "calls cannot be detected during lockdown")
+            return
+        }
+        val mgr = callWhitelistManager ?: CallWhitelistManager(this).also { callWhitelistManager = it }
+        runCatching { mgr.startListening() }
+            .onSuccess { callListenerStarted = true }
+            .onFailure { ex ->
+                Log.w(AppConstants.TAG_ENFORCER,
+                    "Call-state listener failed to start (${ex.javaClass.simpleName}: ${ex.message})")
+            }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -100,6 +114,7 @@ class TimeEnforcerService : Service() {
         // ══ RULE #1: startForeground MUST be the first substantive call. ═══
         promoteForeground("20/20 Rule — initializing")
         acquireWakeLock()
+        ensureCallListener()
 
         when (intent?.action) {
             AppConstants.ACTION_PHASE_TRANSITION -> {

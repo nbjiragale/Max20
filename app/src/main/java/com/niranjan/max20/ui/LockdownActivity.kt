@@ -1,7 +1,6 @@
 package com.niranjan.max20.ui
 
 import android.app.ActivityManager
-import android.app.role.RoleManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -45,19 +44,18 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * LockdownActivity — dual-role: inescapable lockdown UI + HOME launcher replacement.
+ * LockdownActivity — the full-screen lockdown / countdown UI.
+ *
+ * This is NOT the device launcher. It used to claim ROLE_HOME, but that hijacked
+ * the Home screen during the WORK window (no app drawer, only the timer). The
+ * lockdown is instead enforced by the system overlay + accessibility service,
+ * with this activity as the visible surface and a fallback shield.
  *
  * Lock Task Mode:
  *   startLockTask() is called in onResume() every time the activity returns to
  *   the foreground. If Lock Task Mode is active, the Recents button and its
  *   swipe gesture are suppressed by the OS. We handle SecurityException
  *   gracefully and rely on the overlay + accessibility service as fallback.
- *
- * Home button capture:
- *   The activity declares HOME/DEFAULT intent filters (see manifest) allowing
- *   RoleManager.ROLE_HOME to route home-button presses here. We request this
- *   role on first launch. Until the role is granted, the KioskOverlayService
- *   provides visual coverage.
  *
  * Back press neutralization:
  *   OnBackPressedDispatcher with a consuming callback — during lockdown, back
@@ -74,10 +72,6 @@ import kotlinx.coroutines.withTimeoutOrNull
  *   activity shows the countdown immediately.
  */
 class LockdownActivity : ComponentActivity() {
-
-    private companion object {
-        const val REQUEST_ROLE_HOME = 1001
-    }
 
     private lateinit var store: TimerStateStore
     private val lockdownStateReceiver = object : BroadcastReceiver() {
@@ -114,7 +108,6 @@ class LockdownActivity : ComponentActivity() {
         }
 
         ensureEnforcerServiceRunning()
-        requestSystemRoles()
     }
 
     override fun onResume() {
@@ -154,19 +147,6 @@ class LockdownActivity : ComponentActivity() {
                 "Receiver already unregistered: ${ex.message}")
         }
         super.onDestroy()
-    }
-
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQUEST_ROLE_HOME) {
-            val granted = resultCode == RESULT_OK
-            Log.i(AppConstants.TAG_ENFORCER, "ROLE_HOME request result: granted=$granted")
-            if (!granted) {
-                Log.w(AppConstants.TAG_ENFORCER,
-                    "ROLE_HOME not granted — home button will not be captured. " +
-                    "KioskOverlayService acts as coverage.")
-            }
-        }
     }
 
     // ── Window Configuration ───────────────────────────────────────────────
@@ -272,41 +252,6 @@ class LockdownActivity : ComponentActivity() {
                 }
             }
         })
-    }
-
-    // ── Role Requests ──────────────────────────────────────────────────────
-
-    /**
-     * Roles must be requested one at a time: the platform only surfaces a single
-     * role-request dialog. We request ROLE_HOME so the Home button returns to the
-     * lockdown screen. We deliberately do NOT request ROLE_DIALER: replacing the
-     * system dialer requires a full in-call UI we don't provide, and would break
-     * calling. Calls are instead allowed through via call-state detection.
-     */
-    private fun requestSystemRoles() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
-        requestRoleIfMissing(RoleManager.ROLE_HOME, REQUEST_ROLE_HOME)
-    }
-
-    /**
-     * Launches the role-request dialog if the role isn't already held.
-     * @return true if a request dialog was launched, false if the role is already
-     *         held or could not be requested.
-     */
-    private fun requestRoleIfMissing(role: String, requestCode: Int): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
-        val roleManager = getSystemService(RoleManager::class.java) ?: run {
-            Log.e(AppConstants.TAG_ENFORCER, "RoleManager is null — cannot request role $role")
-            return false
-        }
-        if (!roleManager.isRoleAvailable(role) || roleManager.isRoleHeld(role)) {
-            Log.i(AppConstants.TAG_ENFORCER, "Role $role already held or unavailable — skipping request")
-            return false
-        }
-        Log.i(AppConstants.TAG_ENFORCER, "Requesting role $role")
-        @Suppress("DEPRECATION")
-        startActivityForResult(roleManager.createRequestRoleIntent(role), requestCode)
-        return true
     }
 
     // ── Service Initialization ─────────────────────────────────────────────

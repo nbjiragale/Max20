@@ -114,10 +114,14 @@
         </activity>
 
         <!-- ── LockdownActivity ────────────────────────────────────────
-             Dual role: lockdown UI + HOME launcher replacement.
-             The HOME/DEFAULT intent-filter allows RoleManager.ROLE_HOME
-             to route all home-button presses back to this app, eliminating
-             the home-button escape vector during the 20-minute lockdown.
+             The full-screen lockdown / countdown UI. It is launched explicitly
+             by the enforcer/boot receiver (same app), so it needs no launcher
+             intent-filter and is not exported.
+
+             It is deliberately NOT a HOME app: claiming ROLE_HOME would make it
+             the device launcher, hijacking the Home screen during the WORK
+             window (no app drawer, only the timer). The lockdown is enforced by
+             the system overlay + accessibility service instead.
 
              android:launchMode="singleInstance" — only one task/instance
              android:taskAffinity="" — isolated task stack, not groupable
@@ -126,20 +130,14 @@
              ─────────────────────────────────────────────────────────── -->
         <activity
             android:name=".ui.LockdownActivity"
-            android:exported="true"
+            android:exported="false"
             android:excludeFromRecents="true"
             android:launchMode="singleInstance"
             android:showOnLockScreen="true"
             android:showWhenLocked="true"
             android:turnScreenOn="true"
             android:taskAffinity=""
-            android:theme="@style/Theme.Max20.Lockdown">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.HOME" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-        </activity>
+            android:theme="@style/Theme.Max20.Lockdown" />
 
         <!-- ── TimeEnforcerService ─────────────────────────────────────
              Heart of the 20/20 cycle. foregroundServiceType="specialUse"

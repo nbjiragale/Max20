@@ -68,13 +68,16 @@ class KioskOverlayService : Service() {
                     stopSelf()
                 }
                 AppConstants.ACTION_CALL_STARTED -> {
-                    Log.i(AppConstants.TAG_OVERLAY, "Call started — hiding overlay for call UI")
-                    overlayView?.visibility = View.GONE
+                    // Fully remove the overlay window — a merely-GONE overlay window can
+                    // still intercept touches over the dialer, so the user could see but
+                    // not answer the call. The service stays alive to restore it later.
+                    Log.i(AppConstants.TAG_OVERLAY, "Call started — removing overlay so the dialer is usable")
+                    removeOverlay()
                 }
                 AppConstants.ACTION_CALL_ENDED -> {
                     Log.i(AppConstants.TAG_OVERLAY, "Call ended — restoring overlay")
                     if (AppStateManager.isLockdownActive) {
-                        overlayView?.visibility = View.VISIBLE
+                        showOverlay()
                     }
                 }
             }
