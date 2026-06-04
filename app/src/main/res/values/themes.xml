@@ -16,7 +16,7 @@
       done programmatically via WindowInsetsController in LockdownActivity.onCreate()
       so it can be toggled off during active phone calls.
     -->
-    <style name="Theme.Max20.Lockdown" parent="android:Theme.Material.NoTitleBar.Fullscreen">
+    <style name="Theme.Max20.Lockdown" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@android:color/black</item>
         <item name="android:windowIsTranslucent">false</item>
         <item name="android:windowNoTitle">true</item>

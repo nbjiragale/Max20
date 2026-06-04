@@ -120,15 +120,9 @@ class LockdownAccessibilityService : AccessibilityService() {
         }
 
         // During the WORK phase, do not interfere with normal app usage.
-        // Only enforce during LOCKDOWN or when blocking Settings anti-tamper.
-        if (!AppStateManager.isLockdownActive) {
-            // Settings anti-tampering is always active regardless of phase.
-            // A user navigating to our App Info to uninstall triggers this.
-            if (packageName == AppConstants.PKG_ANDROID_SETTINGS) {
-                handleSettingsDetected(event)
-            }
-            return
-        }
+        // Device Admin prevents uninstallation, so blocking Settings here is unnecessary
+        // and breaks onboarding flows (e.g. granting Device Admin from MainActivity).
+        if (!AppStateManager.isLockdownActive) return
 
         // ── Active call exception ───────────────────────────────────────
         // During a call, the telephony UI must take the foreground.
