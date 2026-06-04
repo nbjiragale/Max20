@@ -1,5 +1,6 @@
 package com.niranjan.max20.service
 
+import android.annotation.SuppressLint
 import android.app.*
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -46,6 +47,7 @@ class KioskOverlayService : Service() {
     private var windowManager: WindowManager? = null
     private var overlayView: View? = null
     private var timerTextView: TextView? = null
+    private var emergencyButton: Button? = null
     private val handler = Handler(Looper.getMainLooper())
 
     private val store by lazy { com.niranjan.max20.data.TimerStateStore.getInstance(this) }
@@ -213,6 +215,8 @@ class KioskOverlayService : Service() {
         }
         overlayView = null
         timerTextView = null
+        emergencyButton = null
+        handler.removeCallbacksAndMessages(null) // cancel any in-flight emergency hold
         tickJob?.cancel()
     }
 
@@ -289,13 +293,118 @@ class KioskOverlayService : Service() {
             }
         }
 
+        val emergencyButton = buildEmergencyButton()
+        this.emergencyButton = emergencyButton
+
         container.addView(titleView)
         container.addView(timerTextView)
         container.addView(subtitleView)
         container.addView(callButton)
+        container.addView(emergencyButton)
         root.addView(container)
 
+        refreshEmergencyButton()
+
         return root
+    }
+
+    /**
+     * "Emergency unlock" — hold (not tap) to confirm, then the device fully opens
+     * for a fixed window. A hold (with a visible countdown) plus the daily cap is
+     * the friction that keeps this a genuine safety valve rather than a one-tap
+     * lockdown bypass.
+     */
+    private fun buildEmergencyButton(): Button {
+        return Button(this).apply {
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#5F6368"))
+            setPadding(48, 24, 48, 24)
+            isAllCaps = false
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = 32
+                gravity = Gravity.CENTER_HORIZONTAL
+            }
+            setOnTouchListener(EmergencyHoldListener(this))
+        }
+    }
+
+    /** Reads the remaining daily allowance and updates the emergency button label. */
+    private fun refreshEmergencyButton() {
+        val button = emergencyButton ?: return
+        serviceScope.launch {
+            val remaining = runCatching {
+                store.emergencyUsesRemaining(AppConstants.EMERGENCY_DAILY_LIMIT)
+            }.getOrDefault(AppConstants.EMERGENCY_DAILY_LIMIT)
+            if (remaining <= 0) {
+                button.isEnabled = false
+                button.alpha = 0.5f
+                button.text = getString(com.niranjan.max20.R.string.emergency_none_left)
+            } else {
+                button.isEnabled = true
+                button.alpha = 1f
+                button.text = getString(com.niranjan.max20.R.string.emergency_hold_label, remaining)
+            }
+        }
+    }
+
+    /**
+     * Touch listener implementing hold-to-confirm: a sustained press of
+     * EMERGENCY_HOLD_MS triggers the unlock; releasing early cancels. The label
+     * shows a live countdown while held.
+     */
+    private inner class EmergencyHoldListener(private val button: Button) : View.OnTouchListener {
+        private var triggered = false
+        private val fireRunnable = Runnable {
+            triggered = true
+            onEmergencyConfirmed()
+        }
+        private val countdownRunnable = object : Runnable {
+            var secondsLeft = 0
+            override fun run() {
+                if (secondsLeft > 0) {
+                    button.text = getString(com.niranjan.max20.R.string.emergency_hold_progress, secondsLeft)
+                    secondsLeft--
+                    handler.postDelayed(this, 1_000L)
+                }
+            }
+        }
+
+        @SuppressLint("ClickableViewAccessibility")
+        override fun onTouch(v: View, event: MotionEvent): Boolean {
+            if (!button.isEnabled) return false
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    triggered = false
+                    handler.postDelayed(fireRunnable, AppConstants.EMERGENCY_HOLD_MS)
+                    countdownRunnable.secondsLeft = (AppConstants.EMERGENCY_HOLD_MS / 1_000L).toInt()
+                    handler.post(countdownRunnable)
+                    return true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    handler.removeCallbacks(fireRunnable)
+                    handler.removeCallbacks(countdownRunnable)
+                    if (!triggered) refreshEmergencyButton() // restore label
+                    return true
+                }
+            }
+            return false
+        }
+    }
+
+    private fun onEmergencyConfirmed() {
+        Log.w(AppConstants.TAG_OVERLAY, "Emergency unlock confirmed via hold — requesting unlock")
+        runCatching {
+            startForegroundService(
+                Intent(this, TimeEnforcerService::class.java)
+                    .setAction(AppConstants.ACTION_EMERGENCY_UNLOCK)
+            )
+        }.onFailure { ex ->
+            Log.e(AppConstants.TAG_OVERLAY,
+                "Failed to request emergency unlock: ${ex.javaClass.simpleName}: ${ex.message}")
+        }
     }
 
     // ── Timer Display ──────────────────────────────────────────────────────

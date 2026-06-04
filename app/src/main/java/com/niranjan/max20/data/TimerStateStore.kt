@@ -42,6 +42,10 @@ class TimerStateStore private constructor(
         private val KEY_DURATION      = longPreferencesKey("duration")
         private val KEY_IS_ACTIVE     = booleanPreferencesKey("is_active")
 
+        // Emergency-unlock daily accounting
+        private val KEY_EMERGENCY_DAY   = longPreferencesKey("emergency_day")    // local epoch-day
+        private val KEY_EMERGENCY_COUNT = intPreferencesKey("emergency_count")
+
         @Volatile private var instance: TimerStateStore? = null
 
         fun getInstance(context: Context): TimerStateStore =
@@ -89,6 +93,46 @@ class TimerStateStore private constructor(
     suspend fun clearState() {
         dataStore.edit { it.clear() }
         Log.d(TAG, "clearState: all keys removed")
+    }
+
+    // ── Emergency-Unlock Daily Cap ───────────────────────────────────────────
+
+    /** Emergency unlocks still available today (resets at local midnight). */
+    suspend fun emergencyUsesRemaining(limit: Int): Int {
+        val prefs = dataStore.data.first()
+        val count = if (prefs[KEY_EMERGENCY_DAY] == currentLocalDay()) {
+            prefs[KEY_EMERGENCY_COUNT] ?: 0
+        } else 0
+        return (limit - count).coerceAtLeast(0)
+    }
+
+    /**
+     * Atomically consumes one emergency-unlock credit for today if any remain.
+     * @return true if a credit was consumed (unlock allowed), false if the daily
+     *         limit is already reached.
+     */
+    suspend fun tryConsumeEmergency(limit: Int): Boolean {
+        var allowed = false
+        dataStore.edit { prefs ->
+            val today = currentLocalDay()
+            val count = if (prefs[KEY_EMERGENCY_DAY] == today) (prefs[KEY_EMERGENCY_COUNT] ?: 0) else 0
+            prefs[KEY_EMERGENCY_DAY] = today
+            if (count < limit) {
+                prefs[KEY_EMERGENCY_COUNT] = count + 1
+                allowed = true
+            } else {
+                prefs[KEY_EMERGENCY_COUNT] = count
+            }
+        }
+        Log.i(TAG, "tryConsumeEmergency: allowed=$allowed (limit=$limit)")
+        return allowed
+    }
+
+    /** Local-time epoch day (days since epoch, adjusted for the device time zone). */
+    private fun currentLocalDay(): Long {
+        val now = System.currentTimeMillis()
+        val offset = java.util.TimeZone.getDefault().getOffset(now).toLong()
+        return (now + offset) / 86_400_000L
     }
 
     // ── Synchronous (runBlocking — only for onDestroy / BootReceiver) ─────

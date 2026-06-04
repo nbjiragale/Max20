@@ -133,6 +133,9 @@ class LockdownAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         if (event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) return
 
+        // Emergency unlock: the device is fully open — no blocking, no anti-tamper.
+        if (AppStateManager.isEmergencyActive) return
+
         val packageName = event.packageName?.toString() ?: run {
             Log.v(AppConstants.TAG_ACCESSIBILITY, "Event with null packageName — ignoring")
             return

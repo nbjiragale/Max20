@@ -43,4 +43,8 @@ object AppStateManager {
 
     val isLockdownActive: Boolean
         get() = currentPhase == TimerPhase.LOCKDOWN
+
+    /** True during a temporary emergency unlock — all enforcement is suspended. */
+    val isEmergencyActive: Boolean
+        get() = currentPhase == TimerPhase.EMERGENCY
 }

@@ -12,8 +12,16 @@ object AppConstants {
     const val TAG_ADMIN       = "Max20:DeviceAdmin"
 
     // ── Timer Durations ───────────────────────────────────────────────────
-    const val TIMER_WORK_MS: Long     = 20 * 60 * 1_000L  // 20 min work window
-    const val TIMER_LOCKDOWN_MS: Long = 20 * 60 * 1_000L  // 20 min mandatory break
+    const val TIMER_WORK_MS: Long      = 20 * 60 * 1_000L  // 20 min work window
+    const val TIMER_LOCKDOWN_MS: Long  = 20 * 60 * 1_000L  // 20 min mandatory break
+    const val TIMER_EMERGENCY_MS: Long = 10 * 60 * 1_000L  // 10 min emergency unlock
+
+    // ── Emergency Unlock ──────────────────────────────────────────────────
+    // A temporary, fully-open window for genuine emergencies. Hold-to-confirm to
+    // trigger; capped per day so it can't become a routine lockdown bypass. When
+    // the window ends the device relocks into a fresh break.
+    const val EMERGENCY_DAILY_LIMIT  = 2
+    const val EMERGENCY_HOLD_MS      = 3_000L  // hold duration required to confirm
 
     // ── Notification ──────────────────────────────────────────────────────
     const val NOTIFICATION_CHANNEL_ID   = "max20_enforcer_channel"
@@ -34,6 +42,7 @@ object AppConstants {
     const val ACTION_END_LOCKDOWN     = "com.niranjan.max20.ACTION_END_LOCKDOWN"
     const val ACTION_CALL_STARTED     = "com.niranjan.max20.ACTION_CALL_STARTED"
     const val ACTION_CALL_ENDED       = "com.niranjan.max20.ACTION_CALL_ENDED"
+    const val ACTION_EMERGENCY_UNLOCK = "com.niranjan.max20.ACTION_EMERGENCY_UNLOCK"
 
     // ── Intent Extras ─────────────────────────────────────────────────────
     const val EXTRA_PHASE        = "extra_phase"

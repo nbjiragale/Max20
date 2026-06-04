@@ -13,4 +13,7 @@
     <string name="emergency_call_label">Make a Call</string>
     <string name="device_admin_description">Max20 requires Device Administrator access to prevent uninstallation during active lockdown periods. This protects your digital wellbeing commitment.</string>
     <string name="onboarding_started">20/20 Rule started. The first 20-minute window has begun.</string>
+    <string name="emergency_hold_label">Emergency unlock — hold (%1$d left today)</string>
+    <string name="emergency_hold_progress">Keep holding… %1$d</string>
+    <string name="emergency_none_left">No emergency unlocks left today</string>
 </resources>

@@ -114,6 +114,10 @@ class TimeEnforcerService : Service() {
                 Log.i(AppConstants.TAG_ENFORCER, "Explicit lockdown-end command received")
                 serviceScope.launch { transitionMutex.withLock { transitionToWork() } }
             }
+            AppConstants.ACTION_EMERGENCY_UNLOCK -> {
+                Log.w(AppConstants.TAG_ENFORCER, "EMERGENCY UNLOCK requested")
+                handleEmergencyUnlock()
+            }
             else -> {
                 Log.i(AppConstants.TAG_ENFORCER, "Service (re)started — resuming from DE storage")
                 resumeFromPersistedState()
@@ -189,8 +193,9 @@ class TimeEnforcerService : Service() {
                     "(elapsed=${state.elapsedMs}ms > duration=${state.phaseDurationMs}ms) " +
                     "— transitioning immediately")
                 when (state.phase) {
-                    TimerPhase.WORK     -> transitionToLockdown()
-                    TimerPhase.LOCKDOWN -> transitionToWork()
+                    TimerPhase.WORK      -> transitionToLockdown()
+                    TimerPhase.LOCKDOWN  -> transitionToWork()
+                    TimerPhase.EMERGENCY -> transitionToLockdown()
                 }
                 return@withLock
             }
@@ -231,8 +236,11 @@ class TimeEnforcerService : Service() {
 
                 Log.i(AppConstants.TAG_ENFORCER, "handlePhaseTransition: advancing from ${state.phase}")
                 when (state.phase) {
-                    TimerPhase.WORK     -> transitionToLockdown()
-                    TimerPhase.LOCKDOWN -> transitionToWork()
+                    TimerPhase.WORK      -> transitionToLockdown()
+                    TimerPhase.LOCKDOWN  -> transitionToWork()
+                    // After an emergency window, relock into a fresh break — the
+                    // break still has to be served; emergency only deferred it.
+                    TimerPhase.EMERGENCY -> transitionToLockdown()
                 }
             }
         }
@@ -279,6 +287,45 @@ class TimeEnforcerService : Service() {
     private suspend fun transitionToWork() {
         Log.i(AppConstants.TAG_ENFORCER, "Lockdown complete — releasing to WORK phase")
         startNewWorkPhase()
+    }
+
+    // ── Emergency Unlock ───────────────────────────────────────────────────
+
+    private fun handleEmergencyUnlock() {
+        serviceScope.launch {
+            transitionMutex.withLock {
+                val allowed = store.tryConsumeEmergency(AppConstants.EMERGENCY_DAILY_LIMIT)
+                if (!allowed) {
+                    Log.w(AppConstants.TAG_ENFORCER,
+                        "Emergency unlock denied — daily limit reached")
+                    withContext(Dispatchers.Main) {
+                        updateNotification("No emergency unlocks left today")
+                    }
+                    return@withLock
+                }
+                transitionToEmergency()
+            }
+        }
+    }
+
+    private suspend fun transitionToEmergency() {
+        val state = TimerState(
+            phase             = TimerPhase.EMERGENCY,
+            phaseStartEpochMs = System.currentTimeMillis(),
+            phaseDurationMs   = AppConstants.TIMER_EMERGENCY_MS,
+            isActive          = true
+        )
+        Log.w(AppConstants.TAG_ENFORCER,
+            "═══ EMERGENCY UNLOCK — device fully open for " +
+            "${AppConstants.TIMER_EMERGENCY_MS / 60_000}min ═══")
+        store.saveState(state)
+        AppStateManager.onPhaseChanged(TimerPhase.EMERGENCY)
+        scheduleAlarm(delayMs = AppConstants.TIMER_EMERGENCY_MS, action = AppConstants.ACTION_PHASE_TRANSITION)
+        startTickJob(TimerPhase.EMERGENCY, AppConstants.TIMER_EMERGENCY_MS)
+        withContext(Dispatchers.Main) {
+            updateNotification("Emergency unlock — 10:00 remaining")
+            releaseLockdownUI()
+        }
     }
 
     // ── UI Enforcement Commands (Main Thread) ──────────────────────────────
@@ -332,7 +379,11 @@ class TimeEnforcerService : Service() {
     private fun startTickJob(phase: TimerPhase, initialRemainingMs: Long) {
         tickJob?.cancel()
         var remainingMs = initialRemainingMs
-        val label = if (phase == TimerPhase.LOCKDOWN) "LOCKDOWN" else "Work"
+        val label = when (phase) {
+            TimerPhase.LOCKDOWN  -> "LOCKDOWN"
+            TimerPhase.EMERGENCY -> "Emergency unlock"
+            TimerPhase.WORK      -> "Work"
+        }
 
         tickJob = serviceScope.launch {
             while (isActive) {

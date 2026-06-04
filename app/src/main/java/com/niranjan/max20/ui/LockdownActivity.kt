@@ -15,18 +15,25 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import com.niranjan.max20.AppConstants
+import com.niranjan.max20.R
 import com.niranjan.max20.AppStateManager
 import com.niranjan.max20.data.TimerPhase
 import com.niranjan.max20.data.TimerState
@@ -35,6 +42,7 @@ import com.niranjan.max20.service.TimeEnforcerService
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * LockdownActivity — dual-role: inescapable lockdown UI + HOME launcher replacement.
@@ -349,7 +357,7 @@ private fun LockdownScreen(store: TimerStateStore) {
         ) {
             val state = timerState
             if (state != null && state.phase == TimerPhase.LOCKDOWN && state.isActive) {
-                LockdownCountdown(state)
+                LockdownCountdown(state, store)
             } else if (state != null && state.phase == TimerPhase.WORK && state.isActive) {
                 WorkPhaseDisplay(state)
             } else {
@@ -360,7 +368,7 @@ private fun LockdownScreen(store: TimerStateStore) {
 }
 
 @Composable
-private fun LockdownCountdown(state: TimerState) {
+private fun LockdownCountdown(state: TimerState, store: TimerStateStore) {
     var remainingMs by remember { mutableLongStateOf(state.remainingMs) }
 
     LaunchedEffect(state.phaseStartEpochMs) {
@@ -399,6 +407,78 @@ private fun LockdownCountdown(state: TimerState) {
         color = Color(0xFF4CAF50),
         fontSize = 13.sp
     )
+    Spacer(modifier = Modifier.height(24.dp))
+    EmergencyUnlockButton(store)
+}
+
+/**
+ * Hold-to-confirm emergency unlock for the Compose lockdown screen (the fallback
+ * surface when the system overlay can't be drawn). Mirrors the overlay control:
+ * a sustained EMERGENCY_HOLD_MS press triggers the unlock; releasing early
+ * cancels; the daily allowance is shown and enforced.
+ */
+@Composable
+private fun EmergencyUnlockButton(store: TimerStateStore) {
+    val context = LocalContext.current
+    var remaining by remember { mutableIntStateOf(-1) }
+    var holding by remember { mutableStateOf(false) }
+    var secondsLeft by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(Unit) {
+        remaining = runCatching {
+            store.emergencyUsesRemaining(AppConstants.EMERGENCY_DAILY_LIMIT)
+        }.getOrDefault(AppConstants.EMERGENCY_DAILY_LIMIT)
+    }
+
+    LaunchedEffect(holding) {
+        if (holding) {
+            var s = (AppConstants.EMERGENCY_HOLD_MS / 1_000L).toInt()
+            while (s > 0 && holding) {
+                secondsLeft = s
+                delay(1_000L)
+                s--
+            }
+        }
+    }
+
+    val enabled = remaining != 0
+    val label = when {
+        remaining == 0 -> stringResource(R.string.emergency_none_left)
+        holding        -> stringResource(R.string.emergency_hold_progress, secondsLeft)
+        remaining < 0  -> "Emergency unlock"
+        else           -> stringResource(R.string.emergency_hold_label, remaining)
+    }
+
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (enabled) Color(0xFF5F6368) else Color(0xFF3A3A3A))
+            .pointerInput(enabled) {
+                if (enabled) {
+                    detectTapGestures(
+                        onPress = {
+                            holding = true
+                            val releasedEarly = withTimeoutOrNull(AppConstants.EMERGENCY_HOLD_MS) {
+                                tryAwaitRelease()
+                            }
+                            holding = false
+                            if (releasedEarly == null) {
+                                runCatching {
+                                    context.startForegroundService(
+                                        Intent(context, TimeEnforcerService::class.java)
+                                            .setAction(AppConstants.ACTION_EMERGENCY_UNLOCK)
+                                    )
+                                }
+                            }
+                        }
+                    )
+                }
+            }
+            .padding(horizontal = 24.dp, vertical = 12.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(text = label, color = Color.White, fontSize = 14.sp)
+    }
 }
 
 @Composable
